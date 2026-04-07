@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,31 @@ class Settings(BaseSettings):
     persist_queue_max: int = 10000
     embed_queue_max: int = 10000
     embed_batch_size: int = 8
+
+    @field_validator("persist_queue_max", "embed_queue_max", mode="before")
+    @classmethod
+    def _queue_cap(cls, v: Any) -> int:
+        """CONFIG_FILE 里若写 null，会变成 None，asyncio.Queue(maxsize=None) 在部分 Python 下会崩。0 表示无上限队列。"""
+        if v is None or v == "":
+            return 10000
+        try:
+            i = int(v)
+        except (TypeError, ValueError):
+            return 10000
+        if i < 0:
+            return 10000
+        return min(i, 1_000_000_000)
+
+    @field_validator("embed_batch_size", mode="before")
+    @classmethod
+    def _batch_size(cls, v: Any) -> int:
+        if v is None or v == "":
+            return 8
+        try:
+            i = int(v)
+        except (TypeError, ValueError):
+            return 8
+        return max(1, min(i, 10_000))
 
 
 _settings: Settings | None = None

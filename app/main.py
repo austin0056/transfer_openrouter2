@@ -56,12 +56,14 @@ async def lifespan(app: FastAPI):
             )
         else:
             app.state.db_pool = pool
-            persist_q: asyncio.Queue[PersistJob | None] = asyncio.Queue(
-                maxsize=settings.persist_queue_max
-            )
-            embed_q: asyncio.Queue[EmbedJob | None] = asyncio.Queue(
-                maxsize=settings.embed_queue_max
-            )
+            pm = settings.persist_queue_max
+            em = settings.embed_queue_max
+            if pm is None:
+                pm = 10000
+            if em is None:
+                em = 10000
+            persist_q: asyncio.Queue[PersistJob | None] = asyncio.Queue(maxsize=pm)
+            embed_q: asyncio.Queue[EmbedJob | None] = asyncio.Queue(maxsize=em)
             app.state.persist_queue = persist_q
             app.state.embed_queue = embed_q
             app.state.persist_task = asyncio.create_task(
