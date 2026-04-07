@@ -9,9 +9,9 @@ async def verify_gateway_key(
     authorization: str | None = Header(None),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    if not settings.gateway_api_key:
+    if not settings.gateway_api_key.strip():
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="GATEWAY_API_KEY is not configured",
         )
     if not authorization or not authorization.startswith("Bearer "):

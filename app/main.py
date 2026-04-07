@@ -12,9 +12,11 @@ import httpx
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.admin import router as admin_router
 from app.config import Settings, get_settings
 from app.deps import verify_gateway_key
 from app.embeddings import embed_worker
+from app.http_client import build_http_client
 from app.sse_stream import accumulate_delta, extract_usage, parse_sse_line
 from app.storage import EmbedJob, PersistJob, create_pool, persist_worker
 from app.upstream import merge_chat_completion_body, openrouter_headers
@@ -27,23 +29,11 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     settings = get_settings()
     if not settings.openrouter_api_key.strip():
-        raise RuntimeError("OPENROUTER_API_KEY is required")
+        logger.warning("OPENROUTER_API_KEY is empty — configure via env or /admin")
     if not settings.gateway_api_key.strip():
-        raise RuntimeError("GATEWAY_API_KEY is required")
+        logger.warning("GATEWAY_API_KEY is empty — configure via env or /admin")
 
-    proxy = settings.https_proxy.strip() if settings.https_proxy else None
-    client = httpx.AsyncClient(
-        timeout=httpx.Timeout(
-            settings.request_timeout_seconds,
-            connect=settings.connect_timeout_seconds,
-        ),
-        proxy=proxy,
-        limits=httpx.Limits(
-            max_connections=settings.http_max_connections,
-            max_keepalive_connections=settings.http_max_keepalive,
-        ),
-    )
-    app.state.http_client = client
+    app.state.http_client = build_http_client(settings)
     app.state.persist_queue = None
     app.state.embed_queue = None
     app.state.persist_task = None
@@ -65,7 +55,7 @@ async def lifespan(app: FastAPI):
             persist_worker(pool, persist_q, embed_q)
         )
         app.state.embed_task = asyncio.create_task(
-            embed_worker(pool, embed_q, client, settings)
+            embed_worker(pool, embed_q, app.state.http_client, settings)
         )
         logger.info("PostgreSQL persistence and embedding workers started")
     else:
@@ -83,10 +73,11 @@ async def lifespan(app: FastAPI):
         await app.state.embed_task
     if app.state.db_pool:
         await app.state.db_pool.close()
-    await client.aclose()
+    await app.state.http_client.aclose()
 
 
 app = FastAPI(title="OpenRouter OpenAI Gateway", lifespan=lifespan)
+app.include_router(admin_router, prefix="/admin")
 
 
 @app.get("/health")
@@ -135,6 +126,11 @@ async def chat_completions(
     x_session_id: str | None = Header(None, alias="X-Session-Id"),
 ) -> Response:
     session_external = (x_session_id or "").strip() or str(uuid4())
+    if not settings.openrouter_api_key.strip():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="OPENROUTER_API_KEY is not configured",
+        )
     merged = merge_chat_completion_body(body, settings)
     url = f"{settings.upstream_base_url.rstrip('/')}/chat/completions"
     headers = openrouter_headers(settings)

@@ -2,7 +2,14 @@
 
 ## 环境变量
 
-复制 [.env.example](.env.example) 为 `.env` 并按环境填写。网关进程**必须**配置 `OPENROUTER_API_KEY` 与 `GATEWAY_API_KEY`。
+复制 [.env.example](.env.example) 为 `.env` 并按环境填写。正常转发请求前需要有效的 `OPENROUTER_API_KEY` 与 `GATEWAY_API_KEY`；若尚未写入环境变量，可在服务器上设置 `ADMIN_KEY` 后打开 `/admin/` 将密钥与连接信息保存到 `CONFIG_FILE`（默认 `data/config.json`）。
+
+### 管理面板
+
+- 设置环境变量 **`ADMIN_KEY`** 后，浏览器打开 **`/admin/`**（注意尾部斜杠）。
+- 在页面输入与 `ADMIN_KEY` 相同的密钥，点击「加载配置」「保存」。
+- 配置写入 **`CONFIG_FILE`**（默认 `data/config.json`），与 `.env` 合并；**`ADMIN_KEY` 仅来自环境变量**，不会写入文件。
+- 保存后会自动重建出站 **HTTP 客户端**（例如更新 `HTTPS_PROXY` 立即生效）。若修改 **`DATABASE_URL`** 或嵌入相关项，**需要重启进程** 才能让后台持久化/嵌入任务使用新库与新参数。
 
 ## 数据库
 
