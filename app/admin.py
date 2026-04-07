@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -41,6 +42,12 @@ def _public_config(settings: Settings) -> dict[str, Any]:
 @router.get("/api/config", dependencies=[Depends(verify_admin)])
 async def admin_get_config(settings: Settings = Depends(get_settings)) -> dict[str, Any]:
     return {"config_path": str(config_json_path()), "settings": _public_config(settings)}
+
+
+@router.post("/api/generate-gateway-key", dependencies=[Depends(verify_admin)])
+async def generate_gateway_key() -> dict[str, str]:
+    """Cryptographically strong key for Cursor / OpenAI-compatible clients."""
+    return {"gateway_api_key": secrets.token_urlsafe(48)}
 
 
 @router.post("/api/config", dependencies=[Depends(verify_admin)])
@@ -151,6 +158,13 @@ _ADMIN_HTML = """<!DOCTYPE html>
     button:active { transform: scale(0.98); }
     .primary { background: var(--accent); color: #fff; }
     .primary:hover { background: var(--accent-hover); }
+    .btn-secondary {
+      background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .btn-secondary:hover { background: #30363d; }
+    .input-row { display: flex; gap: 10px; align-items: stretch; }
+    .input-row input { flex: 1; min-width: 0; }
     .foot-note { font-size: 0.8rem; color: var(--muted); margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
     .foot-note code { color: var(--code); font-size: 0.85em; }
     #msg { margin-top: 12px; min-height: 1.2em; font-size: 0.88rem; }
@@ -193,8 +207,11 @@ _ADMIN_HTML = """<!DOCTYPE html>
 
       <div class="field">
         <div class="field-head"><span class="field-title">对外 Gateway 密钥（给 Cursor 用）</span><span class="field-key">gateway_api_key</span></div>
-        <p class="field-desc">客户端（如 Cursor）在 <code>Authorization: Bearer</code> 里填的密钥，<strong>与 OpenRouter Key 独立</strong>，便于你只轮换对外密钥而不动上游。</p>
-        <input type="password" name="gateway_api_key" autocomplete="off" placeholder="自设强随机字符串"/>
+        <p class="field-desc">客户端（如 Cursor）在 <code>Authorization: Bearer</code> 里填的密钥，<strong>与 OpenRouter Key 独立</strong>。可点<strong>随机生成</strong>由服务器生成强随机串；若留空后点「保存全部」，也会<strong>自动生成</strong>并写入配置。</p>
+        <div class="input-row">
+          <input type="password" name="gateway_api_key" id="gatewayApiKey" autocomplete="off" placeholder="点击右侧生成，或保存时留空则自动生成"/>
+          <button type="button" class="btn-secondary" id="btnGenGateway">随机生成</button>
+        </div>
       </div>
 
       <div class="field">
@@ -376,6 +393,27 @@ _ADMIN_HTML = """<!DOCTYPE html>
       return out;
     }
 
+    async function fetchNewGatewayKey() {
+      const r = await fetch("/admin/api/generate-gateway-key", {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.detail || r.statusText || "生成失败");
+      return j.gateway_api_key;
+    }
+
+    $("#btnGenGateway").onclick = async () => {
+      setMsg("生成中…", "");
+      try {
+        const key = await fetchNewGatewayKey();
+        $("#gatewayApiKey").value = key;
+        setMsg("已生成 Gateway 密钥，请记得点击「保存全部」写入配置文件。", "ok");
+      } catch (e) {
+        setMsg(String(e.message || e), "err");
+      }
+    };
+
     $("#btnLoad").onclick = async () => {
       setMsg("加载中…", "");
       try {
@@ -393,6 +431,12 @@ _ADMIN_HTML = """<!DOCTYPE html>
       setMsg("保存中…", "");
       try {
         const body = readForm();
+        const gw = $("#gatewayApiKey").value.trim();
+        if (!gw) {
+          const key = await fetchNewGatewayKey();
+          body.gateway_api_key = key;
+          $("#gatewayApiKey").value = key;
+        }
         const r = await fetch("/admin/api/config", {
           method: "POST",
           headers: authHeaders(),
