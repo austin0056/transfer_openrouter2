@@ -70,98 +70,265 @@ _ADMIN_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>网关管理</title>
+  <title>网关管理 · OpenRouter</title>
   <style>
-    :root { font-family: system-ui, sans-serif; background:#0f1419; color:#e6edf3; }
-    body { max-width: 720px; margin: 24px auto; padding: 0 16px; }
-    h1 { font-size: 1.25rem; font-weight: 600; }
-    label { display:block; margin-top:12px; font-size:0.8rem; color:#8b949e; }
-    input, textarea { width:100%; box-sizing:border-box; padding:8px 10px; border-radius:6px;
-      border:1px solid #30363d; background:#161b22; color:#e6edf3; }
-    textarea { min-height: 64px; font-family: ui-monospace, monospace; font-size: 0.85rem; }
-    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:8px; }
-    button { padding:8px 16px; border-radius:6px; border:0; cursor:pointer; font-weight:500; }
-    .primary { background:#238636; color:#fff; }
-    .ghost { background:#21262d; color:#e6edf3; border:1px solid #30363d; }
-    .hint { font-size:0.8rem; color:#8b949e; margin-top:8px; line-height:1.4; }
-    .err { color:#f85149; margin-top:8px; white-space:pre-wrap; }
-    .ok { color:#3fb950; margin-top:8px; }
-    hr { border:0; border-top:1px solid #30363d; margin:20px 0; }
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #21262d;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #238636;
+      --accent-hover: #2ea043;
+      --danger: #f85149;
+      --ok: #3fb950;
+      --code: #79c0ff;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 0 16px 48px; max-width: 920px; margin-left: auto; margin-right: auto; }
+    .topbar {
+      position: sticky; top: 0; z-index: 10;
+      background: linear-gradient(180deg, rgba(13,17,23,0.98), rgba(13,17,23,0.92));
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 0 12px; margin: 0 -16px 20px; padding-left: 16px; padding-right: 16px;
+    }
+    .topbar h1 { margin: 0 0 4px; font-size: 1.35rem; font-weight: 600; letter-spacing: -0.02em; }
+    .topbar .sub { font-size: 0.85rem; color: var(--muted); margin: 0; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; }
+    .intro {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+      padding: 14px 16px; margin-bottom: 20px; font-size: 0.9rem; color: var(--muted);
+    }
+    .intro strong { color: var(--text); }
+    .intro code { color: var(--code); font-size: 0.85em; padding: 1px 6px; background: var(--surface2); border-radius: 4px; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      padding: 18px 20px 22px; margin-bottom: 18px;
+    }
+    .card h2 {
+      margin: 0 0 6px; font-size: 1rem; font-weight: 600; color: var(--text);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .card .section-desc { margin: 0 0 16px; font-size: 0.8rem; color: var(--muted); line-height: 1.45; }
+    .field { margin-bottom: 18px; }
+    .field:last-child { margin-bottom: 0; }
+    .field-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; margin-bottom: 6px; }
+    .field-title { font-size: 0.9rem; font-weight: 600; color: var(--text); }
+    .field-key {
+      font-family: ui-monospace, "Cascadia Code", monospace; font-size: 0.72rem;
+      color: var(--muted); background: var(--bg); padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border);
+    }
+    .field-desc {
+      font-size: 0.8rem; color: var(--muted); line-height: 1.5; margin: 0 0 8px;
+    }
+    input[type="text"], input[type="password"], input[type="number"], textarea {
+      width: 100%; padding: 10px 12px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+      font-size: 0.9rem;
+    }
+    input:focus, textarea:focus { outline: none; border-color: #388bfd; box-shadow: 0 0 0 3px rgba(56,139,253,0.15); }
+    textarea { min-height: 72px; font-family: ui-monospace, monospace; font-size: 0.82rem; resize: vertical; }
+    .checks { display: flex; flex-direction: column; gap: 12px; }
+    @media (min-width: 560px) { .checks { flex-direction: row; flex-wrap: wrap; } }
+    .check-item {
+      flex: 1; min-width: 200px;
+      border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: var(--bg);
+    }
+    .check-item label { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; margin: 0; font-size: 0.88rem; }
+    .check-item input { width: auto; margin-top: 3px; accent-color: var(--accent); }
+    .check-item .t { font-weight: 600; color: var(--text); display: block; }
+    .check-item .d { font-size: 0.78rem; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+    button {
+      padding: 10px 18px; border-radius: 8px; border: 0; cursor: pointer; font-weight: 600; font-size: 0.9rem;
+      transition: background 0.15s, transform 0.05s;
+    }
+    button:active { transform: scale(0.98); }
+    .primary { background: var(--accent); color: #fff; }
+    .primary:hover { background: var(--accent-hover); }
+    .foot-note { font-size: 0.8rem; color: var(--muted); margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+    .foot-note code { color: var(--code); font-size: 0.85em; }
+    #msg { margin-top: 12px; min-height: 1.2em; font-size: 0.88rem; }
+    .err { color: var(--danger); white-space: pre-wrap; }
+    .ok { color: var(--ok); }
+    .admin-login label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 6px; }
   </style>
 </head>
 <body>
-  <h1>OpenRouter 网关 · 配置</h1>
-  <p class="hint"><strong>推荐：</strong>云平台只配置环境变量 <code>ADMIN_KEY</code>；其余（OpenRouter Key、Gateway Key、代理、数据库、模型等）均在下方表单填写并保存，写入 <code>CONFIG_FILE</code>（默认 <code>data/config.json</code>），无需再配一长串环境变量。<code>ADMIN_KEY</code> 仅用于登录本页，不会写入配置文件。</p>
+  <header class="topbar">
+    <h1>网关配置</h1>
+    <p class="sub">OpenRouter 兼容网关 · 保存至 CONFIG_FILE（与 ADMIN_KEY 分离）</p>
+    <div class="toolbar admin-login">
+      <div style="flex:1; min-width:200px; max-width:420px">
+        <label for="adminKey">管理密钥（环境变量 ADMIN_KEY，仅用于登录本页）</label>
+        <input type="password" id="adminKey" placeholder="与服务器 ADMIN_KEY 一致" autocomplete="off"/>
+      </div>
+      <button type="button" class="primary" id="btnLoad">加载配置</button>
+      <button type="button" class="primary" id="btnSave">保存全部</button>
+    </div>
+    <div id="msg"></div>
+  </header>
 
-  <label>Admin 密钥（ADMIN_KEY）</label>
-  <input type="password" id="adminKey" placeholder="与服务器环境变量 ADMIN_KEY 相同" autocomplete="off"/>
+  <p class="intro">
+    <strong>推荐流程：</strong>在 Zeabur 等平台只设置 <code>ADMIN_KEY</code>；本页填写 OpenRouter 密钥、对外 Gateway 密钥、代理与数据库等，保存后写入 <code>CONFIG_FILE</code>（默认 <code>data/config.json</code>，可用数据盘路径如 <code>/data/config.json</code>）。
+    <code>ADMIN_KEY</code> 不会写入配置文件。修改 <code>DATABASE_URL</code> 或嵌入相关项后<strong>建议重启服务</strong>以应用后台任务。
+  </p>
 
-  <div class="row" style="margin-top:12px">
-    <button type="button" class="primary" id="btnLoad">加载配置</button>
-    <button type="button" class="primary" id="btnSave">保存</button>
-  </div>
-  <div id="msg"></div>
-
-  <hr/>
   <form id="cfg" onsubmit="return false;">
-    <label>OPENROUTER_API_KEY</label>
-    <input type="password" name="openrouter_api_key" autocomplete="off"/>
 
-    <label>GATEWAY_API_KEY（Cursor 使用）</label>
-    <input type="password" name="gateway_api_key" autocomplete="off"/>
+    <div class="card">
+      <h2>上游与模型</h2>
+      <p class="section-desc">网关代表客户端向 OpenRouter 发起请求时使用的密钥与模型标识。</p>
 
-    <label>UPSTREAM_MODEL</label>
-    <input name="upstream_model" />
+      <div class="field">
+        <div class="field-head"><span class="field-title">OpenRouter 上游 API 密钥</span><span class="field-key">openrouter_api_key</span></div>
+        <p class="field-desc">在 <a href="https://openrouter.ai/" target="_blank" rel="noopener" style="color:#58a6ff">openrouter.ai</a> 控制台创建。网关用此密钥调用上游 <code>chat/completions</code>，请妥善保管、勿提交到公开仓库。</p>
+        <input type="password" name="openrouter_api_key" autocomplete="off" placeholder="sk-or-v1-..."/>
+      </div>
 
-    <label>UPSTREAM_BASE_URL</label>
-    <input name="upstream_base_url" />
+      <div class="field">
+        <div class="field-head"><span class="field-title">对外 Gateway 密钥（给 Cursor 用）</span><span class="field-key">gateway_api_key</span></div>
+        <p class="field-desc">客户端（如 Cursor）在 <code>Authorization: Bearer</code> 里填的密钥，<strong>与 OpenRouter Key 独立</strong>，便于你只轮换对外密钥而不动上游。</p>
+        <input type="password" name="gateway_api_key" autocomplete="off" placeholder="自设强随机字符串"/>
+      </div>
 
-    <label>HTTPS_PROXY（SOCKS5 等）</label>
-    <input name="https_proxy" placeholder="socks5://user:pass@host:port" />
+      <div class="field">
+        <div class="field-head"><span class="field-title">上游模型 ID</span><span class="field-key">upstream_model</span></div>
+        <p class="field-desc">OpenRouter 模型 slug，例如 <code>anthropic/claude-opus-4.6</code>。网关会固定合并 <code>provider.only: [&quot;anthropic&quot;]</code>，仅走 Anthropic 官方通道。</p>
+        <input type="text" name="upstream_model" placeholder="anthropic/claude-opus-4.6"/>
+      </div>
 
-    <label>DATABASE_URL</label>
-    <textarea name="database_url" rows="2" placeholder="postgresql://..."></textarea>
-
-    <div class="row">
-      <label><input type="checkbox" name="cache_enabled"/> CACHE_ENABLED</label>
-      <label><input type="checkbox" name="cache_ttl_1h"/> CACHE_TTL_1H（1 小时缓存）</label>
+      <div class="field">
+        <div class="field-head"><span class="field-title">上游 API 根地址</span><span class="field-key">upstream_base_url</span></div>
+        <p class="field-desc">一般为官方 <code>https://openrouter.ai/api/v1</code>。仅当你使用自建反代或兼容端点时才修改。</p>
+        <input type="text" name="upstream_base_url" placeholder="https://openrouter.ai/api/v1"/>
+      </div>
     </div>
 
-    <label>EMBEDDING_MODEL</label>
-    <input name="embedding_model" />
+    <div class="card">
+      <h2>网络代理</h2>
+      <p class="section-desc">出站访问 OpenRouter 时使用的 HTTP/SOCKS 代理（如住宅 SOCKS5）。保存后会自动重建 HTTP 客户端。</p>
+      <div class="field">
+        <div class="field-head"><span class="field-title">HTTPS / SOCKS 代理 URL</span><span class="field-key">https_proxy</span></div>
+        <p class="field-desc">示例：<code>socks5://用户:密码@主机:端口</code>。留空表示直连。若代理格式错误，服务会记录日志并尝试无代理启动。</p>
+        <input type="text" name="https_proxy" placeholder="socks5://user:pass@host:port"/>
+      </div>
+    </div>
 
-    <label>EMBEDDING_DIM</label>
-    <input name="embedding_dim" type="number" />
+    <div class="card">
+      <h2>PostgreSQL</h2>
+      <p class="section-desc">用于异步保存会话请求记录与向量（需已执行仓库内 <code>migrations</code> 并启用 pgvector）。</p>
+      <div class="field">
+        <div class="field-head"><span class="field-title">数据库连接串</span><span class="field-key">database_url</span></div>
+        <p class="field-desc">标准 PostgreSQL URI，例如 <code>postgresql://用户:密码@主机:端口/库名</code>。留空则<strong>不落库、不写向量</strong>，仅转发对话。修改后建议<strong>重启进程</strong>以让连接池与后台任务生效。</p>
+        <textarea name="database_url" rows="3" placeholder="postgresql://..."></textarea>
+      </div>
+    </div>
 
-    <label>EMBEDDING_API_KEY（留空则沿用 OpenRouter Key）</label>
-    <input type="password" name="embedding_api_key" autocomplete="off"/>
+    <div class="card">
+      <h2>提示词缓存（Anthropic / OpenRouter）</h2>
+      <p class="section-desc">通过顶层 <code>cache_control</code> 启用自动缓存，配合 OpenRouter 路由；短对话可能因最小 token 门槛收益不明显。</p>
+      <div class="checks">
+        <div class="check-item">
+          <label><input type="checkbox" name="cache_enabled"/>
+            <span><span class="t">启用缓存注入</span><span class="field-key" style="display:inline;margin-left:6px">cache_enabled</span>
+            <span class="d">关闭则不在请求中附加 <code>cache_control</code>，完全依赖上游默认行为。</span></span>
+          </label>
+        </div>
+        <div class="check-item">
+          <label><input type="checkbox" name="cache_ttl_1h"/>
+            <span><span class="t">使用 1 小时 TTL</span><span class="field-key" style="display:inline;margin-left:6px">cache_ttl_1h</span>
+            <span class="d">开启：约 1 小时缓存窗口；关闭：约 5 分钟 ephemeral。长会话可开 1 小时，注意计费与文档说明。</span></span>
+          </label>
+        </div>
+      </div>
+    </div>
 
-    <label>EMBEDDING_BASE_URL</label>
-    <input name="embedding_base_url" />
+    <div class="card">
+      <h2>嵌入（向量）</h2>
+      <p class="section-desc">对话落库后异步调用嵌入 API，向量写入 PostgreSQL；维度须与迁移脚本中 <code>vector(N)</code> 一致。</p>
 
-    <label>REQUEST_TIMEOUT_SECONDS</label>
-    <input name="request_timeout_seconds" type="number" step="any"/>
+      <div class="field">
+        <div class="field-head"><span class="field-title">嵌入模型</span><span class="field-key">embedding_model</span></div>
+        <p class="field-desc">OpenRouter 兼容的 <code>/embeddings</code> 模型名，需与下方维度匹配。</p>
+        <input type="text" name="embedding_model" placeholder="openai/text-embedding-3-small"/>
+      </div>
 
-    <label>CONNECT_TIMEOUT_SECONDS</label>
-    <input name="connect_timeout_seconds" type="number" step="any"/>
+      <div class="field">
+        <div class="field-head"><span class="field-title">向量维度</span><span class="field-key">embedding_dim</span></div>
+        <p class="field-desc">例如 <code>1536</code>（text-embedding-3-small）。若改模型，请同步修改数据库迁移中的 <code>vector(维度)</code> 并重建或迁移表。</p>
+        <input name="embedding_dim" type="number" placeholder="1536"/>
+      </div>
 
-    <label>HTTP_MAX_CONNECTIONS</label>
-    <input name="http_max_connections" type="number"/>
+      <div class="field">
+        <div class="field-head"><span class="field-title">嵌入专用 API Key（可选）</span><span class="field-key">embedding_api_key</span></div>
+        <p class="field-desc">留空则使用上方的 <strong>OpenRouter 上游密钥</strong> 调用嵌入接口。</p>
+        <input type="password" name="embedding_api_key" autocomplete="off"/>
+      </div>
 
-    <label>HTTP_MAX_KEEPALIVE</label>
-    <input name="http_max_keepalive" type="number"/>
+      <div class="field">
+        <div class="field-head"><span class="field-title">嵌入 API 根地址</span><span class="field-key">embedding_base_url</span></div>
+        <p class="field-desc">一般为 <code>https://openrouter.ai/api/v1</code>，与上游一致即可。</p>
+        <input type="text" name="embedding_base_url" placeholder="https://openrouter.ai/api/v1"/>
+      </div>
+    </div>
 
-    <label>PERSIST_QUEUE_MAX</label>
-    <input name="persist_queue_max" type="number"/>
+    <div class="card">
+      <h2>HTTP 客户端与队列</h2>
+      <p class="section-desc">控制 httpx 超时、连接池与内存中队列长度；高并发或慢代理时可按需调大。</p>
 
-    <label>EMBED_QUEUE_MAX</label>
-    <input name="embed_queue_max" type="number"/>
+      <div class="field">
+        <div class="field-head"><span class="field-title">请求总超时（秒）</span><span class="field-key">request_timeout_seconds</span></div>
+        <p class="field-desc">单次上游请求（含流式拉流）的最长等待时间，长对话或慢网络可适当增大。</p>
+        <input name="request_timeout_seconds" type="number" step="any" placeholder="600"/>
+      </div>
 
-    <label>EMBED_BATCH_SIZE</label>
-    <input name="embed_batch_size" type="number"/>
+      <div class="field">
+        <div class="field-head"><span class="field-title">连接超时（秒）</span><span class="field-key">connect_timeout_seconds</span></div>
+        <p class="field-desc">建立 TCP/TLS 连接的最长时间。</p>
+        <input name="connect_timeout_seconds" type="number" step="any" placeholder="30"/>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><span class="field-title">最大连接数</span><span class="field-key">http_max_connections</span></div>
+        <p class="field-desc">httpx 连接池上限，并发高时可略增。</p>
+        <input name="http_max_connections" type="number" placeholder="100"/>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><span class="field-title">最大 Keep-Alive 连接</span><span class="field-key">http_max_keepalive</span></div>
+        <p class="field-desc">池中保持空闲复用的连接数。</p>
+        <input name="http_max_keepalive" type="number" placeholder="20"/>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><span class="field-title">持久化队列容量</span><span class="field-key">persist_queue_max</span></div>
+        <p class="field-desc">异步写库队列；满时会丢弃新日志并打警告。</p>
+        <input name="persist_queue_max" type="number" placeholder="10000"/>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><span class="field-title">嵌入队列容量</span><span class="field-key">embed_queue_max</span></div>
+        <p class="field-desc">嵌入任务队列；满时丢弃嵌入任务。</p>
+        <input name="embed_queue_max" type="number" placeholder="10000"/>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><span class="field-title">嵌入批大小（预留）</span><span class="field-key">embed_batch_size</span></div>
+        <p class="field-desc">当前实现多为单条嵌入，本字段预留给后续批量优化。</p>
+        <input name="embed_batch_size" type="number" placeholder="8"/>
+      </div>
+    </div>
   </form>
 
-  <p class="hint">配置文件路径由环境变量 <code>CONFIG_FILE</code> 决定，默认 <code>data/config.json</code>（已加入 .gitignore）。</p>
+  <p class="foot-note">
+    配置文件路径由环境变量 <code>CONFIG_FILE</code> 指定（例如数据盘 <code>/data/config.json</code>）；未设置时默认为项目下 <code>data/config.json</code>。
+  </p>
 
   <script>
     const $ = (sel) => document.querySelector(sel);
