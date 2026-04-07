@@ -163,8 +163,15 @@ _ADMIN_HTML = """<!DOCTYPE html>
       white-space: nowrap; flex-shrink: 0;
     }
     .btn-secondary:hover { background: #30363d; }
-    .input-row { display: flex; gap: 10px; align-items: stretch; }
+    .input-row { display: flex; gap: 10px; align-items: stretch; flex-wrap: wrap; }
     .input-row input { flex: 1; min-width: 0; }
+    .btn-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .mono-readonly {
+      flex: 1; min-width: 200px; font-family: ui-monospace, monospace; font-size: 0.85rem;
+      padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--bg); color: var(--ok); word-break: break-all;
+    }
+    .card-highlight { border-color: rgba(56, 139, 253, 0.35); }
     .foot-note { font-size: 0.8rem; color: var(--muted); margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
     .foot-note code { color: var(--code); font-size: 0.85em; }
     #msg { margin-top: 12px; min-height: 1.2em; font-size: 0.88rem; }
@@ -193,6 +200,20 @@ _ADMIN_HTML = """<!DOCTYPE html>
     <code>ADMIN_KEY</code> 不会写入配置文件。修改 <code>DATABASE_URL</code> 或嵌入相关项后<strong>建议重启服务</strong>以应用后台任务。
   </p>
 
+  <div class="card card-highlight">
+    <h2>Cursor / OpenAI 兼容客户端</h2>
+    <p class="section-desc">网关对外提供与 OpenAI 相同的 <code>/v1/chat/completions</code> 等路径。下面 Base URL 由<strong>当前访问域名</strong>自动算出（你部署在 Zeabur 后打开本页即可得到正确地址）。</p>
+    <div class="field">
+      <div class="field-head"><span class="field-title">OpenAI API Base URL</span><span class="field-key">填到 Cursor 的 Override OpenAI Base URL</span></div>
+      <p class="field-desc">须以 <code>/v1</code> 结尾，例如 <code>https://你的域名/v1</code>。下面框内为当前站点对应值，点「复制 URL」粘贴到 Cursor。</p>
+      <div class="input-row">
+        <div class="mono-readonly" id="openaiBaseUrl" title="OpenAI-compatible base URL"></div>
+        <button type="button" class="btn-secondary" id="btnCopyBaseUrl">复制 URL</button>
+      </div>
+    </div>
+    <p class="field-desc" style="margin:0">API Key 填下方 <strong>Gateway 密钥</strong>；Model 填与 <code>upstream_model</code> 相同的模型 ID（如 <code>anthropic/claude-opus-4.6</code>）。</p>
+  </div>
+
   <form id="cfg" onsubmit="return false;">
 
     <div class="card">
@@ -207,10 +228,13 @@ _ADMIN_HTML = """<!DOCTYPE html>
 
       <div class="field">
         <div class="field-head"><span class="field-title">对外 Gateway 密钥（给 Cursor 用）</span><span class="field-key">gateway_api_key</span></div>
-        <p class="field-desc">客户端（如 Cursor）在 <code>Authorization: Bearer</code> 里填的密钥，<strong>与 OpenRouter Key 独立</strong>。可点<strong>随机生成</strong>由服务器生成强随机串；若留空后点「保存全部」，也会<strong>自动生成</strong>并写入配置。</p>
+        <p class="field-desc">客户端（如 Cursor）在 <code>Authorization: Bearer</code> 里填的密钥，<strong>与 OpenRouter Key 独立</strong>。可点<strong>随机生成</strong>；生成或保存后点<strong>复制密钥</strong>粘贴到 Cursor。若留空后点「保存全部」，也会<strong>自动生成</strong>并写入配置。</p>
         <div class="input-row">
-          <input type="password" name="gateway_api_key" id="gatewayApiKey" autocomplete="off" placeholder="点击右侧生成，或保存时留空则自动生成"/>
-          <button type="button" class="btn-secondary" id="btnGenGateway">随机生成</button>
+          <input type="password" name="gateway_api_key" id="gatewayApiKey" autocomplete="off" placeholder="点击随机生成，或保存时留空则自动生成"/>
+          <div class="btn-row">
+            <button type="button" class="btn-secondary" id="btnGenGateway">随机生成</button>
+            <button type="button" class="btn-secondary" id="btnCopyGateway">复制密钥</button>
+          </div>
         </div>
       </div>
 
@@ -351,6 +375,38 @@ _ADMIN_HTML = """<!DOCTYPE html>
     const $ = (sel) => document.querySelector(sel);
     const msg = $("#msg");
 
+    (function initOpenAiBaseUrl() {
+      const origin = window.location.origin || (window.location.protocol + "//" + window.location.host);
+      const root = origin.endsWith("/") ? origin.slice(0, -1) : origin;
+      const base = root + "/v1";
+      const el = document.getElementById("openaiBaseUrl");
+      if (el) el.textContent = base;
+    })();
+
+    async function copyText(text, okMsg) {
+      try {
+        await navigator.clipboard.writeText(text);
+        setMsg(okMsg || "已复制到剪贴板", "ok");
+      } catch (e) {
+        setMsg("复制失败，请手动选中复制。(" + (e && e.message) + ")", "err");
+      }
+    }
+
+    $("#btnCopyBaseUrl").onclick = () => {
+      const t = $("#openaiBaseUrl").textContent.trim();
+      if (!t) return;
+      copyText(t, "已复制 OpenAI API Base URL");
+    };
+
+    $("#btnCopyGateway").onclick = () => {
+      const v = $("#gatewayApiKey").value.trim();
+      if (!v) {
+        setMsg("请先生成或保存 Gateway 密钥", "err");
+        return;
+      }
+      copyText(v, "已复制 Gateway 密钥，可粘贴到 Cursor API Key");
+    };
+
     function authHeaders() {
       const k = $("#adminKey").value.trim();
       if (!k) throw new Error("请先填写 Admin 密钥（ADMIN_KEY）");
@@ -408,7 +464,7 @@ _ADMIN_HTML = """<!DOCTYPE html>
       try {
         const key = await fetchNewGatewayKey();
         $("#gatewayApiKey").value = key;
-        setMsg("已生成 Gateway 密钥，请记得点击「保存全部」写入配置文件。", "ok");
+        setMsg("已生成 Gateway 密钥，请点「保存全部」写入配置，再用「复制密钥」粘贴到 Cursor。", "ok");
       } catch (e) {
         setMsg(String(e.message || e), "err");
       }
