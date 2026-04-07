@@ -91,7 +91,7 @@ _ADMIN_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <h1>OpenRouter 网关 · 配置</h1>
-  <p class="hint">在环境变量中设置 <code>ADMIN_KEY</code> 后，在下方输入同一密钥进行加载与保存。密钥不会写入配置文件。</p>
+  <p class="hint"><strong>推荐：</strong>云平台只配置环境变量 <code>ADMIN_KEY</code>；其余（OpenRouter Key、Gateway Key、代理、数据库、模型等）均在下方表单填写并保存，写入 <code>CONFIG_FILE</code>（默认 <code>data/config.json</code>），无需再配一长串环境变量。<code>ADMIN_KEY</code> 仅用于登录本页，不会写入配置文件。</p>
 
   <label>Admin 密钥（ADMIN_KEY）</label>
   <input type="password" id="adminKey" placeholder="与服务器环境变量 ADMIN_KEY 相同" autocomplete="off"/>

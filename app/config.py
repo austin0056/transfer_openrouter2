@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -54,8 +57,16 @@ def _load_merged_settings() -> Settings:
     path = config_json_path()
     if not path.exists():
         return base
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+        if not text:
+            return base
+        raw = json.loads(text)
+    except (OSError, UnicodeError, json.JSONDecodeError) as e:
+        logger.warning("Ignoring unreadable CONFIG_FILE %s: %s", path, e)
+        return base
     if not isinstance(raw, dict):
+        logger.warning("Ignoring CONFIG_FILE %s: root must be a JSON object", path)
         return base
     raw.pop("admin_key", None)
     allowed: dict[str, Any] = {}
@@ -64,7 +75,11 @@ def _load_merged_settings() -> Settings:
             allowed[k] = v
     if not allowed:
         return base
-    return base.model_copy(update=allowed)
+    try:
+        return base.model_copy(update=allowed)
+    except Exception as e:
+        logger.warning("Ignoring invalid values in CONFIG_FILE %s: %s", path, e)
+        return base
 
 
 def get_settings() -> Settings:

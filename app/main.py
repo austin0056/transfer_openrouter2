@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Any
@@ -27,6 +28,11 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info(
+        "Boot: PORT=%s PYTHON=%s",
+        os.environ.get("PORT", ""),
+        os.environ.get("PYTHON_VERSION", ""),
+    )
     settings = get_settings()
     if not settings.openrouter_api_key.strip():
         logger.warning("OPENROUTER_API_KEY is empty — configure via env or /admin")
@@ -41,23 +47,30 @@ async def lifespan(app: FastAPI):
     app.state.db_pool = None
 
     if settings.database_url and settings.database_url.strip():
-        pool = await create_pool(settings.database_url)
-        app.state.db_pool = pool
-        persist_q: asyncio.Queue[PersistJob | None] = asyncio.Queue(
-            maxsize=settings.persist_queue_max
-        )
-        embed_q: asyncio.Queue[EmbedJob | None] = asyncio.Queue(
-            maxsize=settings.embed_queue_max
-        )
-        app.state.persist_queue = persist_q
-        app.state.embed_queue = embed_q
-        app.state.persist_task = asyncio.create_task(
-            persist_worker(pool, persist_q, embed_q)
-        )
-        app.state.embed_task = asyncio.create_task(
-            embed_worker(pool, embed_q, app.state.http_client, settings)
-        )
-        logger.info("PostgreSQL persistence and embedding workers started")
+        try:
+            pool = await create_pool(settings.database_url)
+        except Exception:
+            logger.exception(
+                "Failed to connect to PostgreSQL (DATABASE_URL). "
+                "Continuing without persistence; fix URL or wait for DB to be ready."
+            )
+        else:
+            app.state.db_pool = pool
+            persist_q: asyncio.Queue[PersistJob | None] = asyncio.Queue(
+                maxsize=settings.persist_queue_max
+            )
+            embed_q: asyncio.Queue[EmbedJob | None] = asyncio.Queue(
+                maxsize=settings.embed_queue_max
+            )
+            app.state.persist_queue = persist_q
+            app.state.embed_queue = embed_q
+            app.state.persist_task = asyncio.create_task(
+                persist_worker(pool, persist_q, embed_q)
+            )
+            app.state.embed_task = asyncio.create_task(
+                embed_worker(pool, embed_q, app.state.http_client, settings)
+            )
+            logger.info("PostgreSQL persistence and embedding workers started")
     else:
         logger.warning("DATABASE_URL not set: persistence and embeddings disabled")
 
