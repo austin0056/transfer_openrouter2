@@ -228,7 +228,7 @@ def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) ->
     msgs = body.get("messages")
     if not isinstance(msgs, list):
         return
-    # 第一遍：过滤无效消息
+    # 第一遍：过滤无效消息 + 规范化 user/system content
     filtered: list[Any] = []
     for m in msgs:
         if not isinstance(m, dict):
@@ -238,9 +238,28 @@ def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) ->
             has_name = isinstance(m.get("name"), str) and m["name"].strip()
             if not has_tool_call_id and not has_name:
                 continue
-        # Anthropic 拒绝空内容的 user/system 消息
+        # 对 user/system 消息：规范化 content block 数组，剥离空块
         if m.get("role") in ("user", "system"):
-            if _is_empty_content(m.get("content")):
+            c = m.get("content")
+            if isinstance(c, list):
+                # 只保留有实际内容的 block
+                good_blocks: list[Any] = []
+                for block in c:
+                    if isinstance(block, dict):
+                        btype = block.get("type", "text")
+                        if btype == "text":
+                            txt = block.get("text")
+                            if isinstance(txt, str) and txt.strip():
+                                good_blocks.append(block)
+                        else:
+                            # image_url 等非 text 类型保留
+                            good_blocks.append(block)
+                    elif isinstance(block, str) and block.strip():
+                        good_blocks.append(block)
+                if not good_blocks:
+                    continue  # 所有 block 都为空，跳过整条消息
+                m["content"] = good_blocks
+            elif _is_empty_content(c):
                 continue
         filtered.append(m)
 

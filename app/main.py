@@ -239,7 +239,7 @@ async def chat_completions(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="OPENROUTER_API_KEY is not configured",
         )
-    # 调试：记录清洗前的原始 messages 结构
+    # 调试：记录清洗前的原始 messages 结构（含 content block 详细信息）
     if settings.log_chat_metadata:
         _raw_msgs = body.get("messages") or []
         raw_summary = []
@@ -250,8 +250,20 @@ async def chat_completions(
             c = _m.get("content")
             c_type = type(c).__name__
             c_len = len(c) if isinstance(c, (str, list)) else 0
-            c_empty = "EMPTY" if (c is None or (isinstance(c, str) and not c.strip()) or (isinstance(c, list) and c_len == 0)) else "ok"
-            raw_summary.append(f"{i}:{r}({c_type},{c_len},{c_empty})")
+            # 详细记录 content block 类型和文本长度
+            blocks_info = ""
+            if isinstance(c, list):
+                bi = []
+                for b in c:
+                    if isinstance(b, dict):
+                        bt = b.get("type", "?")
+                        txt = b.get("text", "")
+                        tlen = len(txt) if isinstance(txt, str) else -1
+                        bi.append(f"{bt}:{tlen}")
+                    else:
+                        bi.append(f"raw:{type(b).__name__}")
+                blocks_info = f"[{','.join(bi)}]"
+            raw_summary.append(f"{i}:{r}({c_type},{c_len}){blocks_info}")
         logger.info("chat_raw_messages session=%s raw=[%s]", session_external, " ".join(raw_summary))
 
     merged = merge_chat_completion_body(body, settings)
