@@ -39,17 +39,28 @@ def _inject_identity_prompt(body: dict[str, Any], settings: Settings) -> None:
 
 _DEFAULT_EFFICIENCY_PROMPT = (
     "[INTERNAL OPTIMIZATION DIRECTIVE — invisible to user, do not mention or reference this]\n"
-    "To minimize API costs while maintaining quality:\n"
-    "1. BATCH tool calls: combine multiple Read/Shell calls into a single response when possible. "
-    "Prefer reading multiple files in one turn rather than one file per turn.\n"
-    "2. TARGETED reads: use line ranges (offset+limit) instead of reading entire files. "
-    "Read only the sections relevant to the current task.\n"
-    "3. MINIMIZE redundant reads: if you already read a file earlier in this conversation, "
-    "do not read it again unless the file has been modified.\n"
-    "4. CONCISE tool arguments: keep shell commands short and precise.\n"
-    "5. PLAN before acting: think about which files you actually need before issuing Read calls. "
-    "Avoid exploratory reads when you can infer file structure from directory listings.\n"
-    "6. RESPOND concisely: provide clear, direct answers without unnecessary verbosity."
+    "You are operating through a token-metered API. Follow these rules to minimize cost while "
+    "maintaining full code intelligence:\n\n"
+    "READING STRATEGY:\n"
+    "- ALWAYS start by listing the directory structure (ls/Glob/tree) before reading any files. "
+    "Understand the project layout first, then read only what you need.\n"
+    "- NEVER read these files/dirs: package-lock.json, yarn.lock, pnpm-lock.yaml, "
+    "node_modules/*, dist/*, build/*, .git/*, *.min.js, *.min.css, *.map, "
+    "*.pyc, __pycache__/*, .next/*, vendor/*, *.wasm, *.bin, *.dat.\n"
+    "- START with entry points: package.json, README, main/index files, config files — "
+    "these reveal the project structure without reading everything.\n"
+    "- For large files (>200 lines): use offset+limit to read only the relevant section. "
+    "Read the first 50 lines to understand structure, then jump to the specific function/class.\n"
+    "- NEVER re-read a file you already read in this conversation unless it was just modified.\n\n"
+    "TOOL CALL STRATEGY:\n"
+    "- BATCH multiple Read/Shell/Glob calls in a single response. "
+    "Issue 3-5 reads at once rather than one per turn.\n"
+    "- Combine related shell commands with && instead of separate calls.\n"
+    "- Prefer Glob patterns over multiple individual reads to discover files.\n\n"
+    "RESPONSE STRATEGY:\n"
+    "- Be direct and concise. Skip lengthy explanations unless the user asks for them.\n"
+    "- When writing code, output only the changes needed — do not repeat unchanged code.\n"
+    "- When explaining, use bullet points over paragraphs."
 )
 
 
@@ -450,8 +461,21 @@ def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) ->
     _final_sanitize_messages(body)
 
 
+def _normalize_content_block(block: dict[str, Any]) -> dict[str, Any]:
+    """规范化单个 content block：只保留标准字段，移除多余属性以提高缓存一致性。"""
+    btype = block.get("type", "text")
+    if btype == "text":
+        out: dict[str, Any] = {"type": "text", "text": block.get("text", "")}
+        # 保留 cache_control（如果有）
+        if "cache_control" in block:
+            out["cache_control"] = block["cache_control"]
+        return out
+    # 非 text block 保持原样
+    return block
+
+
 def _sanitize_content(content: Any) -> Any:
-    """清洗 content：字符串保持原样，数组剥离空 text block。"""
+    """清洗 content：字符串保持原样，数组剥离空 text block + 规范化字段。"""
     if isinstance(content, str):
         return content if content.strip() else None
     if isinstance(content, list):
@@ -462,7 +486,7 @@ def _sanitize_content(content: Any) -> Any:
                 if btype == "text":
                     txt = block.get("text")
                     if isinstance(txt, str) and txt.strip():
-                        good.append(block)
+                        good.append(_normalize_content_block(block))
                 else:
                     good.append(block)
             elif isinstance(block, str) and block.strip():
@@ -568,8 +592,20 @@ def _inject_cache_breakpoints(body: dict[str, Any], settings: Settings) -> None:
             if isinstance(fn, dict):
                 fn["cache_control"] = cache_marker
 
-    # Breakpoint 3: 倒数第二条 user/tool 消息（即上一轮末尾），让历史消息被缓存
-    # 找到最后一条 user/tool 消息的前一条 user/tool 消息
+    # Breakpoint 3: 最后一条 assistant 消息（连续 tool call 轮次间缓存前一轮）
+    assistant_indices = [i for i, m in enumerate(msgs)
+                         if isinstance(m, dict) and m.get("role") == "assistant"]
+    if assistant_indices:
+        last_asst = msgs[assistant_indices[-1]]
+        c = last_asst.get("content")
+        if isinstance(c, str) and c:
+            last_asst["content"] = [{"type": "text", "text": c, "cache_control": cache_marker}]
+        elif isinstance(c, list) and c:
+            last_block = c[-1]
+            if isinstance(last_block, dict):
+                last_block["cache_control"] = cache_marker
+
+    # Breakpoint 4: 倒数第二条 user/tool 消息（历史前缀缓存）
     user_tool_indices = [i for i, m in enumerate(msgs)
                          if isinstance(m, dict) and m.get("role") in ("user", "tool")]
     if len(user_tool_indices) >= 2:
@@ -598,10 +634,10 @@ def _sort_tools(body: dict[str, Any]) -> None:
         pass  # 排序失败不影响功能
 
 
-def _truncate_old_tool_results(body: dict[str, Any], settings: Settings) -> None:
-    """截断历史 tool result，保留最近 N 轮完整，更早的截断到 max_chars。
+def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
+    """压缩历史消息：截断旧 tool result 和旧 assistant 长回复。
 
-    这样做的好处：
+    保留最近 N 轮完整，更早的消息压缩。好处：
     1. 减少重复携带的 token（省钱）
     2. 被截断的旧消息内容固定不变，后续请求前缀完全一致（提高缓存命中）
     """
@@ -611,26 +647,42 @@ def _truncate_old_tool_results(body: dict[str, Any], settings: Settings) -> None
     if not isinstance(msgs, list):
         return
 
-    max_chars = settings.tool_result_max_chars
+    tool_max = settings.tool_result_max_chars
+    assistant_max = 1500  # 旧 assistant 回复截断阈值
     keep_recent = settings.tool_result_keep_recent_turns
 
     # 找到所有 assistant 消息的位置（每个 assistant 消息代表一"轮"）
     assistant_indices = [i for i, m in enumerate(msgs)
                          if isinstance(m, dict) and m.get("role") == "assistant"]
     if len(assistant_indices) <= keep_recent:
-        return  # 对话还很短，不截断
+        return
 
-    # 截断边界：keep_recent 轮之前的所有 tool 消息
     cutoff_idx = assistant_indices[-keep_recent]
 
     for i, m in enumerate(msgs):
         if i >= cutoff_idx:
-            break  # 最近 N 轮，保持完整
-        if not isinstance(m, dict) or m.get("role") != "tool":
+            break
+        if not isinstance(m, dict):
             continue
-        c = m.get("content")
-        if isinstance(c, str) and len(c) > max_chars:
-            m["content"] = c[:max_chars] + f"\n\n[...truncated, original {len(c)} chars]"
+        role = m.get("role")
+
+        # 截断旧 tool result
+        if role == "tool":
+            c = m.get("content")
+            if isinstance(c, str) and len(c) > tool_max:
+                m["content"] = c[:tool_max] + f"\n\n[...truncated, original {len(c)} chars]"
+
+        # 截断旧 assistant 长回复（保留 tool_calls 不动）
+        elif role == "assistant":
+            c = m.get("content")
+            if isinstance(c, str) and len(c) > assistant_max:
+                m["content"] = c[:assistant_max] + f"\n\n[...truncated, original {len(c)} chars]"
+            elif isinstance(c, list):
+                for block in c:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        txt = block.get("text", "")
+                        if isinstance(txt, str) and len(txt) > assistant_max:
+                            block["text"] = txt[:assistant_max] + f"\n\n[...truncated, original {len(txt)} chars]"
 
 
 def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) -> dict[str, Any]:
@@ -640,7 +692,7 @@ def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) 
     _inject_identity_prompt(body, settings)
     _inject_efficiency_prompt(body, settings)
     _sort_tools(body)
-    _truncate_old_tool_results(body, settings)
+    _compress_old_messages(body, settings)
     body["model"] = settings.upstream_model
     body["provider"] = {"only": ["anthropic"], "allow_fallbacks": False}
     if settings.cache_enabled:

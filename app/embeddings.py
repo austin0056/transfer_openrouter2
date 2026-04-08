@@ -43,20 +43,79 @@ async def embed_worker(
     if not has_pgvector:
         logger.warning("pgvector extension not found; falling back to double precision[] for embeddings")
 
+    batch: list[EmbedJob] = []
+
     while True:
-        job = await queue.get()
-        if job is None:
+        # 尝试累积批次：先阻塞等第一条，然后非阻塞收集更多
+        if not batch:
+            job = await queue.get()
+            if job is None:
+                queue.task_done()
+                break
+            # 跳过极短文本（<50 字符），节省 embedding 费用
+            if len(job.text.strip()) < 50:
+                queue.task_done()
+                continue
+            batch.append(job)
+
+        # 非阻塞收集更多 job 到批次上限
+        settings = get_settings()
+        batch_size = settings.embed_batch_size or 8
+        while len(batch) < batch_size:
+            try:
+                job = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if job is None:
+                queue.task_done()
+                # 收到终止信号，先处理当前批次再退出
+                await _try_flush(app, pool, has_pgvector, batch)
+                batch.clear()
+                return
+            if len(job.text.strip()) < 50:
+                queue.task_done()
+                continue
+            batch.append(job)
+
+        # 如果批次未满，等一小段时间看有没有更多
+        if len(batch) < batch_size:
+            try:
+                job = await asyncio.wait_for(queue.get(), timeout=2.0)
+                if job is None:
+                    queue.task_done()
+                    await _try_flush(app, pool, has_pgvector, batch)
+                    batch.clear()
+                    return
+                if len(job.text.strip()) >= 50:
+                    batch.append(job)
+                else:
+                    queue.task_done()
+            except asyncio.TimeoutError:
+                pass  # 超时，处理当前批次
+
+        # 处理批次
+        await _try_flush(app, pool, has_pgvector, batch)
+        for _ in batch:
             queue.task_done()
-            break
-        try:
-            client: httpx.AsyncClient = app.state.http_client
-            settings = get_settings()
-            use_pgvector = settings.embedding_use_pgvector and has_pgvector
-            await _flush_batch(pool, client, settings, [job], use_pgvector=use_pgvector)
-        except Exception:
-            logger.exception("embedding failed for turn %s", job.turn_id)
-        finally:
-            queue.task_done()
+        batch.clear()
+
+
+async def _try_flush(
+    app: FastAPI,
+    pool: asyncpg.Pool,
+    has_pgvector: bool,
+    batch: list[EmbedJob],
+) -> None:
+    """安全地处理一个批次。"""
+    if not batch:
+        return
+    try:
+        client: httpx.AsyncClient = app.state.http_client
+        settings = get_settings()
+        use_pgvector = settings.embedding_use_pgvector and has_pgvector
+        await _flush_batch(pool, client, settings, batch, use_pgvector=use_pgvector)
+    except Exception:
+        logger.exception("embedding batch failed for %d turns", len(batch))
 
 
 async def _flush_batch(
