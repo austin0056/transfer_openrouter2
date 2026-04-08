@@ -8,8 +8,9 @@ from typing import Any
 
 import asyncpg
 import httpx
+from fastapi import FastAPI
 
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.storage import EmbedJob
 
 logger = logging.getLogger(__name__)
@@ -20,18 +21,19 @@ def _vector_literal(vec: list[float]) -> str:
 
 
 async def embed_worker(
+    app: FastAPI,
     pool: asyncpg.Pool,
     queue: asyncio.Queue[EmbedJob | None],
-    client: httpx.AsyncClient,
-    settings: Settings,
 ) -> None:
+    """每次任务使用 app.state.http 客户端与 get_settings()，避免 /admin 保存时 aclose 旧 client 后仍引用已关闭实例。"""
     while True:
         job = await queue.get()
         if job is None:
             queue.task_done()
             break
         try:
-            await _flush_batch(pool, client, settings, [job])
+            client: httpx.AsyncClient = app.state.http_client
+            await _flush_batch(pool, client, get_settings(), [job])
         except Exception:
             logger.exception("embedding failed for turn %s", job.turn_id)
         finally:

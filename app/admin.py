@@ -62,7 +62,7 @@ async def admin_save_config(
     await old.aclose()
     return {
         "ok": True,
-        "message": "已保存并刷新 HTTP 客户端。若修改了 DATABASE_URL 或嵌入相关项，建议重启进程以应用后台任务。",
+        "message": "已保存并刷新 HTTP 客户端。嵌入任务会自动使用新客户端。若修改了 DATABASE_URL，仍需重启以重建数据库连接池与 worker。",
         "config_path": str(config_json_path()),
     }
 

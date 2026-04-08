@@ -84,7 +84,7 @@ async def lifespan(app: FastAPI):
                     persist_worker(pool, persist_q, embed_q)
                 )
                 app.state.embed_task = asyncio.create_task(
-                    embed_worker(pool, embed_q, app.state.http_client, settings)
+                    embed_worker(app, pool, embed_q)
                 )
                 logger.info("PostgreSQL persistence and embedding workers started")
     else:

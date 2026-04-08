@@ -73,6 +73,17 @@ class Settings(BaseSettings):
 
 
 _settings: Settings | None = None
+_settings_file_mtime: float | None = None
+
+
+def _config_file_mtime() -> float:
+    path = config_json_path()
+    try:
+        if path.exists():
+            return float(path.stat().st_mtime)
+    except OSError:
+        pass
+    return 0.0
 
 
 def config_json_path() -> Path:
@@ -110,15 +121,19 @@ def _load_merged_settings() -> Settings:
 
 
 def get_settings() -> Settings:
-    global _settings
-    if _settings is None:
+    """每次比对 CONFIG_FILE 修改时间；多 worker 时避免只在保存请求所在进程生效、其它进程仍用旧 upstream_model。"""
+    global _settings, _settings_file_mtime
+    mtime = _config_file_mtime()
+    if _settings is None or mtime != _settings_file_mtime:
         _settings = _load_merged_settings()
+        _settings_file_mtime = mtime
     return _settings
 
 
 def reload_settings() -> Settings:
-    global _settings
+    global _settings, _settings_file_mtime
     _settings = _load_merged_settings()
+    _settings_file_mtime = _config_file_mtime()
     return _settings
 
 
