@@ -65,8 +65,11 @@ _DEFAULT_EFFICIENCY_PROMPT = (
 
 
 def _inject_efficiency_prompt(body: dict[str, Any], settings: Settings) -> None:
-    """注入隐藏的效率指令，引导模型减少 tool call 次数和读取量。"""
+    """注入隐藏的效率指令，引导模型减少 tool call 次数和读取量。仅在有 tools 时注入。"""
     if not settings.efficiency_prompt_enabled:
+        return
+    # 没有 tools 的简单对话不需要效率指令
+    if not body.get("tools"):
         return
     prompt = (settings.efficiency_prompt or "").strip() or _DEFAULT_EFFICIENCY_PROMPT
     if not prompt:
