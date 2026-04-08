@@ -80,7 +80,7 @@ async def _flush_batch(
     async with pool.acquire() as conn:
         async with conn.transaction():
             for job, vec in zip(batch, vectors, strict=True):
-                if len(vec) != settings.embedding_dim:
+                if settings.embedding_dim is not None and len(vec) != settings.embedding_dim:
                     logger.error(
                         "vector dim %s != expected %s",
                         len(vec),
