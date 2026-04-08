@@ -11,15 +11,22 @@ from uuid import uuid4
 
 import httpx
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request, Response, status
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app.admin import router as admin_router
 from app.config import Settings, get_settings
 from app.deps import verify_gateway_key
 from app.embeddings import embed_worker
 from app.http_client import build_http_client
-from app.sse_stream import accumulate_delta, extract_usage, parse_sse_line
-from app.storage import EmbedJob, PersistJob, create_pool, persist_worker
+from app.sse_stream import (
+    accumulate_delta,
+    accumulate_tool_calls,
+    extract_usage,
+    finish_reason_from_chunk,
+    parse_sse_line,
+    tool_calls_list,
+)
+from app.storage import EmbedJob, PersistJob, create_pool, persistence_schema_ready, persist_worker
 from app.upstream import merge_chat_completion_body, openrouter_headers
 
 logging.basicConfig(level=logging.INFO)
@@ -55,24 +62,31 @@ async def lifespan(app: FastAPI):
                 "Continuing without persistence; fix URL or wait for DB to be ready."
             )
         else:
-            app.state.db_pool = pool
-            pm = settings.persist_queue_max
-            em = settings.embed_queue_max
-            if pm is None:
-                pm = 10000
-            if em is None:
-                em = 10000
-            persist_q: asyncio.Queue[PersistJob | None] = asyncio.Queue(maxsize=pm)
-            embed_q: asyncio.Queue[EmbedJob | None] = asyncio.Queue(maxsize=em)
-            app.state.persist_queue = persist_q
-            app.state.embed_queue = embed_q
-            app.state.persist_task = asyncio.create_task(
-                persist_worker(pool, persist_q, embed_q)
-            )
-            app.state.embed_task = asyncio.create_task(
-                embed_worker(pool, embed_q, app.state.http_client, settings)
-            )
-            logger.info("PostgreSQL persistence and embedding workers started")
+            if not await persistence_schema_ready(pool):
+                logger.error(
+                    "DATABASE_URL 能连通，但缺少表 public.sessions（未执行 migrations/001_init.sql "
+                    "或连到了空库）。已关闭落库与向量任务；请在「当前连接串指向的库」执行 SQL 后重启。"
+                )
+                await pool.close()
+            else:
+                app.state.db_pool = pool
+                pm = settings.persist_queue_max
+                em = settings.embed_queue_max
+                if pm is None:
+                    pm = 10000
+                if em is None:
+                    em = 10000
+                persist_q: asyncio.Queue[PersistJob | None] = asyncio.Queue(maxsize=pm)
+                embed_q: asyncio.Queue[EmbedJob | None] = asyncio.Queue(maxsize=em)
+                app.state.persist_queue = persist_q
+                app.state.embed_queue = embed_q
+                app.state.persist_task = asyncio.create_task(
+                    persist_worker(pool, persist_q, embed_q)
+                )
+                app.state.embed_task = asyncio.create_task(
+                    embed_worker(pool, embed_q, app.state.http_client, settings)
+                )
+                logger.info("PostgreSQL persistence and embedding workers started")
     else:
         logger.warning("DATABASE_URL not set: persistence and embeddings disabled")
 
@@ -98,6 +112,12 @@ app.include_router(admin_router, prefix="/admin")
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.head("/v1")
+async def head_v1_root() -> Response:
+    """部分探活/负载均衡会 HEAD /v1，避免无意义 404。"""
+    return Response(status_code=204)
 
 
 @app.get("/v1/models")
@@ -233,6 +253,8 @@ async def _stream_chat(
     async def gen():
         nonlocal last_usage
         err: str | None = None
+        tool_bucket: dict[int, dict[str, Any]] = {}
+        last_finish: str | None = None
         try:
             async with client.stream("POST", url, headers=headers, json=merged) as r:
                 if r.status_code >= 400:
@@ -253,6 +275,10 @@ async def _stream_chat(
                     if not parsed or parsed.get("__done__"):
                         continue
                     accumulate_delta(parsed, parts)
+                    accumulate_tool_calls(parsed, tool_bucket)
+                    fr = finish_reason_from_chunk(parsed)
+                    if fr:
+                        last_finish = fr
                     u = extract_usage(parsed)
                     if u is not None:
                         last_usage = u
@@ -269,13 +295,22 @@ async def _stream_chat(
         finally:
             latency_ms = int((time.perf_counter() - t0) * 1000)
             full_text = "".join(parts)
+            tclist = tool_calls_list(tool_bucket)
+            msg: dict[str, Any] = {"role": "assistant"}
+            if full_text:
+                msg["content"] = full_text
+            else:
+                msg["content"] = None
+            if tclist:
+                msg["tool_calls"] = tclist
+            fin = last_finish or ("tool_calls" if tclist else "stop")
             synthetic: dict[str, Any] = {
                 "object": "chat.completion",
                 "choices": [
                     {
                         "index": 0,
-                        "message": {"role": "assistant", "content": full_text},
-                        "finish_reason": "stop",
+                        "message": msg,
+                        "finish_reason": fin,
                     }
                 ],
             }

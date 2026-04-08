@@ -1,6 +1,6 @@
--- Requires PostgreSQL with pgvector. Adjust vector(1536) if EMBEDDING_DIM differs.
--- 若库不支持 vector 扩展，请改用 001_init_no_pgvector.sql，并在配置中关闭 embedding_use_pgvector。
-CREATE EXTENSION IF NOT EXISTS vector;
+-- 托管 PostgreSQL 无 pgvector 扩展时使用本脚本（Zeabur 等若报 extension "vector" is not available）。
+-- 向量列使用 double precision[]；应用内需关闭「使用 pgvector 类型写入」或设置 embedding_use_pgvector=false。
+-- 若托管库日后支持 pgvector，可改用 001_init.sql 并迁移数据（需重建 embeddings 列类型）。
 
 CREATE TABLE IF NOT EXISTS sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
 CREATE TABLE IF NOT EXISTS embeddings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     turn_id UUID NOT NULL REFERENCES conversation_turns (id) ON DELETE CASCADE,
-    embedding vector(1536),
+    embedding double precision[],
     embedding_model TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

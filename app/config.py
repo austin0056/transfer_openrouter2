@@ -33,6 +33,7 @@ class Settings(BaseSettings):
 
     embedding_model: str = "openai/text-embedding-3-small"
     embedding_dim: int = 1536
+    embedding_use_pgvector: bool = True
     embedding_api_key: str | None = None
     embedding_base_url: str = "https://openrouter.ai/api/v1"
 

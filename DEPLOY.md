@@ -15,8 +15,8 @@
 
 ## 数据库
 
-1. 安装 PostgreSQL，并安装扩展 **pgvector**。
-2. 执行迁移：
+1. 安装 PostgreSQL；若需向量相似检索，安装扩展 **pgvector** 并执行 `migrations/001_init.sql`。
+2. **托管库若不支持 `CREATE EXTENSION vector`**（报 extension "vector" is not available）：在 SQL 控制台执行 **`migrations/001_init_no_pgvector.sql`**（向量列为 `double precision[]`），并在 **`/admin/` 取消勾选**「使用 pgvector 列类型」，或设置环境变量 **`EMBEDDING_USE_PGVECTOR=false`**，然后重启服务。
 
 ```bash
 psql "$DATABASE_URL" -f migrations/001_init.sql
@@ -69,6 +69,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 - **Base URL**：`https://你的域名/v1`（注意末尾 `/v1`）。
 - **API Key**：填 `GATEWAY_API_KEY`。
 - **Model**：选网关列出的模型 ID（默认与 `UPSTREAM_MODEL` 一致，如 `anthropic/claude-opus-4.6`）。
+- **工具调用（Tools）**：请求体中的 `tools` / `tool_choice` 会原样转发至 OpenRouter；流式响应中的 `tool_calls` 分片会透传给客户端，并在服务端合并后用于落库摘要。
 - **Session**：建议客户端在请求头携带 `X-Session-Id`（网关也会在响应头回写）；未携带时会自动生成 UUID。
 
 ## SOCKS5 住宅代理

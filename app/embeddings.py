@@ -85,12 +85,23 @@ async def _flush_batch(
                         settings.embedding_dim,
                     )
                     continue
-                await conn.execute(
-                    """
-                    INSERT INTO embeddings (turn_id, embedding, embedding_model)
-                    VALUES ($1, $2::vector, $3)
-                    """,
-                    job.turn_id,
-                    _vector_literal(vec),
-                    emb_key,
-                )
+                if settings.embedding_use_pgvector:
+                    await conn.execute(
+                        """
+                        INSERT INTO embeddings (turn_id, embedding, embedding_model)
+                        VALUES ($1, $2::vector, $3)
+                        """,
+                        job.turn_id,
+                        _vector_literal(vec),
+                        emb_key,
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        INSERT INTO embeddings (turn_id, embedding, embedding_model)
+                        VALUES ($1, $2, $3)
+                        """,
+                        job.turn_id,
+                        vec,
+                        emb_key,
+                    )

@@ -263,7 +263,7 @@ _ADMIN_HTML = """<!DOCTYPE html>
 
     <div class="card">
       <h2>PostgreSQL</h2>
-      <p class="section-desc">用于异步保存会话请求记录与向量（需已执行仓库内 <code>migrations</code> 并启用 pgvector）。</p>
+      <p class="section-desc">用于异步保存会话请求记录与向量（需已执行仓库内 <code>migrations</code>）。支持 pgvector 或普通 PostgreSQL（见嵌入卡片说明）。</p>
       <div class="field">
         <div class="field-head"><span class="field-title">数据库连接串</span><span class="field-key">database_url</span></div>
         <p class="field-desc">标准 PostgreSQL URI，例如 <code>postgresql://用户:密码@主机:端口/库名</code>。留空则<strong>不落库、不写向量</strong>，仅转发对话。修改后建议<strong>重启进程</strong>以让连接池与后台任务生效。</p>
@@ -292,7 +292,16 @@ _ADMIN_HTML = """<!DOCTYPE html>
 
     <div class="card">
       <h2>嵌入（向量）</h2>
-      <p class="section-desc">对话落库后异步调用嵌入 API，向量写入 PostgreSQL；维度须与迁移脚本中 <code>vector(N)</code> 一致。</p>
+      <p class="section-desc">对话落库后异步调用嵌入 API。若托管库<strong>无 pgvector</strong>，请执行 <code>migrations/001_init_no_pgvector.sql</code>，并<strong>取消勾选</strong>下方「使用 pgvector 列类型」。无扩展时维度仍须与模型一致。</p>
+
+      <div class="checks">
+        <div class="check-item">
+          <label><input type="checkbox" name="embedding_use_pgvector" checked/>
+            <span><span class="t">使用 pgvector 列类型写入</span><span class="field-key" style="display:inline;margin-left:6px">embedding_use_pgvector</span>
+            <span class="d">开启：对应 <code>001_init.sql</code> 的 <code>vector(N)</code>。关闭：对应 <code>001_init_no_pgvector.sql</code> 的 <code>double precision[]</code>。</span></span>
+          </label>
+        </div>
+      </div>
 
       <div class="field">
         <div class="field-head"><span class="field-title">嵌入模型</span><span class="field-key">embedding_model</span></div>

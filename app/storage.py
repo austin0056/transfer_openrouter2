@@ -57,15 +57,22 @@ def extract_assistant_text(response_body: dict[str, Any] | None) -> str:
         return ""
     msg = (choices[0] or {}).get("message") or {}
     c = msg.get("content")
+    text = ""
     if isinstance(c, str):
-        return c
-    if isinstance(c, list):
+        text = c
+    elif isinstance(c, list):
         parts: list[str] = []
         for block in c:
             if isinstance(block, dict) and block.get("type") == "text":
                 parts.append(str(block.get("text") or ""))
-        return "\n".join(parts)
-    return ""
+        text = "\n".join(parts)
+    tcs = msg.get("tool_calls")
+    if isinstance(tcs, list) and tcs:
+        tool_blob = json.dumps(tcs, ensure_ascii=False)
+        if text:
+            return text + "\n\n[tool_calls]\n" + tool_blob
+        return "[tool_calls]\n" + tool_blob
+    return text
 
 
 async def persist_worker(
@@ -80,6 +87,13 @@ async def persist_worker(
             break
         try:
             await _persist_one(pool, embed_queue, job)
+        except asyncpg.exceptions.UndefinedTableError:
+            logger.error(
+                "PostgreSQL 缺少表（例如 sessions）。请对当前 DATABASE_URL 指向的库执行: "
+                "psql \"$DATABASE_URL\" -f migrations/001_init.sql "
+                "(session=%s)",
+                job.external_session_id,
+            )
         except Exception:
             logger.exception("persist_worker failed for session %s", job.external_session_id)
         finally:
@@ -147,3 +161,17 @@ async def _persist_one(
 
 async def create_pool(database_url: str) -> asyncpg.Pool:
     return await asyncpg.create_pool(database_url, min_size=1, max_size=20)
+
+
+async def persistence_schema_ready(pool: asyncpg.Pool) -> bool:
+    """True if migrations/001_init.sql has been applied (at least public.sessions)."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = 'sessions'
+            )
+            """
+        )
+        return bool(row)
