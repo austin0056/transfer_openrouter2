@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     upstream_model: str = "anthropic/claude-opus-4.6"
     upstream_base_url: str = "https://openrouter.ai/api/v1"
 
+    identity_prompt_enabled: bool = False
+    identity_prompt: str = (
+        "我是 Claude Opus 4.6，来自 Anthropic 的 Claude 4.6 模型家族。"
+        "Claude 4.6 家族目前包括 Claude Opus 4.6 和 Claude Sonnet 4.6，"
+        "其中 Opus 4.6 是最先进、最智能的版本。"
+    )
+
     https_proxy: str | None = None
 
     database_url: str | None = None

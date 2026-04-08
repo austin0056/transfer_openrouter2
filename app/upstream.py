@@ -9,6 +9,34 @@ from typing import Any
 from app.config import Settings
 
 
+def _inject_identity_prompt(body: dict[str, Any], settings: Settings) -> None:
+    """可选：注入 system，向用户说明本线路固定为 Opus（减少误称 Sonnet）。"""
+    if not settings.identity_prompt_enabled:
+        return
+    fact = (settings.identity_prompt or "").strip()
+    if not fact:
+        return
+    guidance = (
+        "当用户问及你的模型名称、厂商、版本或身份时，请基于下文事实简洁作答，"
+        "不要自称 Sonnet、GPT 或其他与下文不符的型号；用户未问及身份时不要主动长篇介绍自己。\n\n"
+        f"{fact}"
+    )
+    msgs = body.get("messages")
+    if not isinstance(msgs, list):
+        body["messages"] = [{"role": "system", "content": guidance}]
+        return
+    if msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system":
+        c0 = msgs[0].get("content")
+        if isinstance(c0, str):
+            msgs[0]["content"] = guidance + "\n\n---\n\n" + c0
+        elif isinstance(c0, list):
+            msgs.insert(0, {"role": "system", "content": guidance})
+        else:
+            msgs[0]["content"] = guidance
+    else:
+        msgs.insert(0, {"role": "system", "content": guidance})
+
+
 def _function_name_nonempty(fn: Any) -> bool:
     if not isinstance(fn, dict):
         return False
@@ -121,6 +149,7 @@ def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) 
     """Preserve tools/tool_choice/parallel_tool_calls etc.; only override model + Anthropic routing."""
     body = deepcopy(client_body)
     _adapt_openai_body_for_upstream(body)
+    _inject_identity_prompt(body, settings)
     body["model"] = settings.upstream_model
     body["provider"] = {"only": ["anthropic"], "allow_fallbacks": False}
     if settings.cache_enabled:

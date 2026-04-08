@@ -249,6 +249,20 @@ _ADMIN_HTML = """<!DOCTYPE html>
         <p class="field-desc">一般为官方 <code>https://openrouter.ai/api/v1</code>。仅当你使用自建反代或兼容端点时才修改。</p>
         <input type="text" name="upstream_base_url" placeholder="https://openrouter.ai/api/v1"/>
       </div>
+
+      <div class="checks">
+        <div class="check-item">
+          <label><input type="checkbox" name="identity_prompt_enabled"/>
+            <span><span class="t">注入身份说明（system）</span><span class="field-key" style="display:inline;margin-left:6px">identity_prompt_enabled</span>
+            <span class="d">开启后，每次对话会在消息前合并一条 system，便于用户问「你是什么模型」时按下方文案回答（减少误称 Sonnet）。</span></span>
+          </label>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-head"><span class="field-title">身份说明正文</span><span class="field-key">identity_prompt</span></div>
+        <p class="field-desc">仅当上一项勾选时生效；会包在一小段「仅在问身份时作答」的指令后发给上游。</p>
+        <textarea name="identity_prompt" rows="4" placeholder="我是 Claude Opus 4.6…"></textarea>
+      </div>
     </div>
 
     <div class="card">
