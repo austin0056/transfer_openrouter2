@@ -113,6 +113,14 @@ def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) ->
         for t in tools:
             if not isinstance(t, dict):
                 continue
+            # Anthropic 原生工具格式: {"name":"X","description":"...","input_schema":{...}}
+            # 转换为 OpenAI 格式: {"type":"function","function":{"name":"X","description":"...","parameters":{...}}}
+            if "function" not in t and "name" in t:
+                fn_obj: dict[str, Any] = {"name": t["name"]}
+                if "description" in t:
+                    fn_obj["description"] = t["description"]
+                fn_obj["parameters"] = t.get("input_schema") or t.get("parameters") or {}
+                t = {"type": "function", "function": fn_obj}
             fn = t.get("function")
             ttype = t.get("type") or "function"
             if ttype == "function" and isinstance(fn, dict) and _function_name_nonempty(fn):
@@ -134,14 +142,32 @@ def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) ->
         body.pop("tools", None)
 
     tc = body.get("tool_choice")
-    if isinstance(tc, dict) and tc.get("type") == "function":
-        fn = tc.get("function")
-        n = fn.get("name") if isinstance(fn, dict) else None
-        if (
-            not isinstance(n, str)
-            or not n.strip()
-            or (allowed and n.strip() not in allowed)
-        ):
+    if isinstance(tc, dict):
+        tc_type = tc.get("type", "")
+        # Anthropic 原生格式转 OpenAI 格式
+        if tc_type == "auto":
+            body["tool_choice"] = "auto"
+        elif tc_type == "any":
+            body["tool_choice"] = "required"
+        elif tc_type == "none":
+            body["tool_choice"] = "none"
+        elif tc_type == "tool":
+            # Anthropic: {"type":"tool","name":"X"} → OpenAI: {"type":"function","function":{"name":"X"}}
+            name = tc.get("name", "")
+            if isinstance(name, str) and name.strip() and (not allowed or name.strip() in allowed):
+                body["tool_choice"] = {"type": "function", "function": {"name": name.strip()}}
+            else:
+                body["tool_choice"] = "auto"
+        elif tc_type == "function":
+            fn = tc.get("function")
+            n = fn.get("name") if isinstance(fn, dict) else None
+            if (
+                not isinstance(n, str)
+                or not n.strip()
+                or (allowed and n.strip() not in allowed)
+            ):
+                body["tool_choice"] = "auto"
+        else:
             body["tool_choice"] = "auto"
     elif isinstance(tc, str) and tc not in ("none", "auto", "required"):
         if allowed and tc.strip() not in allowed:
