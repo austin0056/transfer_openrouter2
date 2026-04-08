@@ -6,6 +6,20 @@ import json
 from typing import Any
 
 
+def _coerce_tool_index(idx: Any) -> int:
+    """统一为 int，避免 bucket.keys() 混用 str/int 导致 sorted 抛错或顺序错乱。"""
+    if idx is None:
+        return 0
+    if isinstance(idx, bool):
+        return 0
+    if isinstance(idx, int):
+        return idx
+    try:
+        return int(idx)
+    except (TypeError, ValueError):
+        return 0
+
+
 def parse_sse_line(line: str) -> dict[str, Any] | None:
     line = line.strip()
     if not line.startswith("data:"):
@@ -27,13 +41,17 @@ def accumulate_delta(chunk: dict[str, Any], parts: list[str]) -> None:
         c = delta.get("content")
         if isinstance(c, str) and c:
             parts.append(c)
+        elif isinstance(c, list):
+            for block in c:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    t = block.get("text")
+                    if isinstance(t, str) and t:
+                        parts.append(t)
 
 
 def apply_tool_call_delta(bucket: dict[int, dict[str, Any]], tc: dict[str, Any]) -> None:
     """Merge one streaming tool_call fragment (OpenAI format, keyed by index)."""
-    idx = tc.get("index")
-    if idx is None:
-        return
+    idx = _coerce_tool_index(tc.get("index"))
     cur = bucket.setdefault(
         idx,
         {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},

@@ -65,9 +65,10 @@ def _normalize_tool_call_arguments(fn: dict[str, Any]) -> None:
         fn["arguments"] = json.dumps(raw, ensure_ascii=False)
 
 
-def _adapt_openai_body_for_upstream(body: dict[str, Any]) -> None:
+def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) -> None:
     """转换层：兼容分发/客户端脏负载，上游无需、分发侧也无需改代码。"""
     allowed: set[str] = set()
+    loose = settings.loose_tools_passthrough
     tools = body.get("tools")
     if isinstance(tools, list):
         kept: list[Any] = []
@@ -75,13 +76,17 @@ def _adapt_openai_body_for_upstream(body: dict[str, Any]) -> None:
             if not isinstance(t, dict):
                 continue
             fn = t.get("function")
-            if not isinstance(fn, dict):
-                continue
-            if not _function_name_nonempty(fn):
-                continue
-            _normalize_tool_function_schema(fn)
-            allowed.add(str(fn["name"]).strip())
-            kept.append(t)
+            ttype = t.get("type") or "function"
+            if ttype == "function" and isinstance(fn, dict) and _function_name_nonempty(fn):
+                _normalize_tool_function_schema(fn)
+                allowed.add(str(fn["name"]).strip())
+                kept.append(t)
+            elif loose:
+                if isinstance(fn, dict):
+                    _normalize_tool_function_schema(fn)
+                    if _function_name_nonempty(fn):
+                        allowed.add(str(fn["name"]).strip())
+                kept.append(t)
         if kept:
             body["tools"] = kept
         else:
@@ -144,11 +149,53 @@ def _adapt_openai_body_for_upstream(body: dict[str, Any]) -> None:
             if m.get("content") is None:
                 m["content"] = ""
 
+    for m in cleaned:
+        if isinstance(m, dict) and m.get("role") == "developer":
+            m["role"] = "system"
+
+    _bridge_max_completion_tokens(body)
+    _strip_unknown_fields(body)
+
+
+def _bridge_max_completion_tokens(body: dict[str, Any]) -> None:
+    """Cursor / 新版 OpenAI 客户端常发 max_completion_tokens；OpenRouter 仍认 max_tokens。"""
+    if body.get("max_tokens") is not None:
+        return
+    mct = body.get("max_completion_tokens")
+    if mct is None:
+        return
+    try:
+        body["max_tokens"] = int(mct)
+    except (TypeError, ValueError):
+        pass
+
+
+# OpenAI / OpenRouter 已知接受的顶层字段白名单
+_KNOWN_BODY_KEYS: set[str] = {
+    "model", "messages", "stream", "stream_options",
+    "temperature", "top_p", "n", "stop",
+    "max_tokens", "max_completion_tokens",
+    "presence_penalty", "frequency_penalty", "logit_bias",
+    "user", "tools", "tool_choice", "parallel_tool_calls",
+    "response_format", "seed", "logprobs", "top_logprobs",
+    "service_tier",
+    # OpenRouter extensions
+    "provider", "cache_control", "transforms", "route",
+    "reasoning_effort",
+}
+
+
+def _strip_unknown_fields(body: dict[str, Any]) -> None:
+    """移除 Cursor/客户端发送的非标准字段，防止上游 400。"""
+    for k in list(body.keys()):
+        if k not in _KNOWN_BODY_KEYS:
+            body.pop(k)
+
 
 def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) -> dict[str, Any]:
     """Preserve tools/tool_choice/parallel_tool_calls etc.; only override model + Anthropic routing."""
     body = deepcopy(client_body)
-    _adapt_openai_body_for_upstream(body)
+    _adapt_openai_body_for_upstream(body, settings)
     _inject_identity_prompt(body, settings)
     body["model"] = settings.upstream_model
     body["provider"] = {"only": ["anthropic"], "allow_fallbacks": False}
@@ -163,7 +210,14 @@ def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) 
 
 
 def openrouter_headers(settings: Settings) -> dict[str, str]:
-    return {
+    h: dict[str, str] = {
         "Authorization": f"Bearer {settings.openrouter_api_key}",
         "Content-Type": "application/json",
     }
+    ref = (settings.openrouter_http_referer or "").strip()
+    if ref:
+        h["HTTP-Referer"] = ref
+    title = (settings.openrouter_app_title or "").strip()
+    if title:
+        h["X-Title"] = title
+    return h

@@ -66,11 +66,36 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 
 ## Cursor 接入
 
-- **Base URL**：`https://你的域名/v1`（注意末尾 `/v1`）。
-- **API Key**：填 `GATEWAY_API_KEY`。
-- **Model**：选网关列出的模型 ID（默认与 `UPSTREAM_MODEL` 一致，如 `anthropic/claude-opus-4.6`）。
-- **工具调用（Tools）**：请求体中的 `tools` / `tool_choice` 会原样转发至 OpenRouter；流式响应中的 `tool_calls` 分片会透传给客户端，并在服务端合并后用于落库摘要。
-- **Session**：建议客户端在请求头携带 `X-Session-Id`（网关也会在响应头回写）；未携带时会自动生成 UUID。
+### OpenAI 兼容面（当前网关实现）
+
+| 路径 | 说明 |
+|------|------|
+| `POST /v1/chat/completions` | 支持流式/非流式、`tools`、`tool_choice`、`stream_options`、`messages` 多模态 list 等；合并后转发 OpenRouter。 |
+| `GET /v1/models` | 返回配置中的 `upstream_model` 一项。 |
+| `GET /health`、`HEAD /v1` | 探活。 |
+| `POST /v1/embeddings` | **未实现**；若 Cursor 将同一 Base URL 用于嵌入会 404（本仓库嵌入仅服务端后台任务直连 OpenRouter）。 |
+
+### Cursor 客户端设置
+
+- **Base URL**：`https://你的域名/v1`（注意末尾 `/v1`，避免与反代叠加成 `/v1/v1/...`）。
+- **API Key**：填 `GATEWAY_API_KEY`（管理面板生成的对外密钥）。
+- **Model**：与 `GET /v1/models` 中 `id` 一致（默认与 `UPSTREAM_MODEL` 相同，如 `anthropic/claude-opus-4.6`）。
+- **工具与 MCP**：浏览器侧 **MCP** 在 Cursor 本机执行；模型通过 **`tools` / `tool_calls`** 与 Agent 交互。网关默认只保留合法 **`function`** 工具；若客户端使用扩展形态，可在 **`/admin/`** 开启 **「宽松工具透传」**（可能增加上游 400 风险，按需开关对比）。
+- **Session**：可携带请求头 **`X-Session-Id`**（响应头会回写）。
+
+### Agent / Plan / Debug 排错建议
+
+1. 在 **`/admin/`** 开启 **「记录对话元数据日志」**，在容器日志中查看 `chat_upstream_meta`：流式与否、`tools` 数量、请求与响应中的 **`model`**（不含正文），用于区分「Cursor 显示问题」与「上游真实 model」。  
+2. Agent 异常时可 **暂时关闭「提示词缓存」**，排除 `cache_control` 与长 system（含身份注入）的干扰。  
+3. **身份说明（system）** 会增加上下文长度；Agent 场景可关闭或缩短文案。  
+4. 读写出错时先看 **Cursor Output / MCP 日志**（本机工具失败）；再看网关与 **OpenRouter** 返回是否含完整 **`tool_calls`**。  
+5. 可选配置 **OpenRouter HTTP-Referer / X-Title**（见管理面板），符合 OpenRouter 统计习惯。
+
+### 已做的请求侧适配摘要
+
+- `role: developer` → `system`；`max_completion_tokens` → `max_tokens`（在未提供 `max_tokens` 时）。  
+- SSE 增加 **`X-Accel-Buffering: no`**；全局 **CORS** 宽松策略便于内嵌视图。  
+- 对 **tools / tool_calls / tool 消息** 做清洗与参数补全，减少 `Tool ''` 等上游 400。
 
 ## SOCKS5 住宅代理
 

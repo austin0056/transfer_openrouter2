@@ -238,6 +238,13 @@ _ADMIN_HTML = """<!DOCTYPE html>
         </div>
       </div>
 
+      <div class="field" id="cursorSnippetField">
+        <div class="field-head"><span class="field-title">Cursor 快速配置</span></div>
+        <p class="field-desc">将以下 JSON 片段粘贴到 Cursor 的 <code>Settings &gt; Models &gt; OpenAI API Key</code> 和 <code>Override OpenAI Base URL</code>，或直接复制到 <code>.cursor/settings.json</code>。</p>
+        <pre id="cursorSnippet" style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:6px;font-size:13px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;cursor:pointer" title="点击复制">正在生成…</pre>
+        <button type="button" class="btn-secondary" id="btnCopyCursorSnippet" style="margin-top:6px">复制 Cursor 配置</button>
+      </div>
+
       <div class="field">
         <div class="field-head"><span class="field-title">上游模型 ID</span><span class="field-key">upstream_model</span></div>
         <p class="field-desc">OpenRouter 模型 slug，例如 <code>anthropic/claude-opus-4.6</code>。网关会固定合并 <code>provider.only: [&quot;anthropic&quot;]</code>，仅走 Anthropic 官方通道。</p>
@@ -248,6 +255,33 @@ _ADMIN_HTML = """<!DOCTYPE html>
         <div class="field-head"><span class="field-title">上游 API 根地址</span><span class="field-key">upstream_base_url</span></div>
         <p class="field-desc">一般为官方 <code>https://openrouter.ai/api/v1</code>。仅当你使用自建反代或兼容端点时才修改。</p>
         <input type="text" name="upstream_base_url" placeholder="https://openrouter.ai/api/v1"/>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><span class="field-title">OpenRouter HTTP-Referer（可选）</span><span class="field-key">openrouter_http_referer</span></div>
+        <p class="field-desc">OpenRouter 统计用 URL，例如公开仓库链接。</p>
+        <input type="text" name="openrouter_http_referer" placeholder="https://github.com/you/repo"/>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><span class="field-title">OpenRouter X-Title（可选）</span><span class="field-key">openrouter_app_title</span></div>
+        <p class="field-desc">在 OpenRouter 侧展示的应用标题。</p>
+        <input type="text" name="openrouter_app_title" placeholder="OpenRouter Gateway"/>
+      </div>
+
+      <div class="checks">
+        <div class="check-item">
+          <label><input type="checkbox" name="loose_tools_passthrough"/>
+            <span><span class="t">宽松工具透传</span><span class="field-key" style="display:inline;margin-left:6px">loose_tools_passthrough</span>
+            <span class="d">开启后保留非 <code>function</code> 标准形态的 <code>tools</code> 项（如部分客户端扩展）；关闭时仅保留带合法 <code>function.name</code> 的项。上游报错时可先关闭排查。</span></span>
+          </label>
+        </div>
+        <div class="check-item">
+          <label><input type="checkbox" name="log_chat_metadata"/>
+            <span><span class="t">记录对话元数据日志</span><span class="field-key" style="display:inline;margin-left:6px">log_chat_metadata</span>
+            <span class="d">每条 chat 一行 INFO：流式与否、tools 数量、请求/响应 model，<strong>不包含</strong>消息正文，便于对照 Cursor 与 OpenRouter。</span></span>
+          </label>
+        </div>
       </div>
 
       <div class="checks">
@@ -430,6 +464,30 @@ _ADMIN_HTML = """<!DOCTYPE html>
       copyText(v, "已复制 Gateway 密钥，可粘贴到 Cursor API Key");
     };
 
+    function updateCursorSnippet() {
+      const base = location.origin + "/v1";
+      const key = $("#gatewayApiKey").value.trim() || "<your-gateway-api-key>";
+      const model = (document.querySelector('[name="upstream_model"]')?.value || "").trim() || "anthropic/claude-opus-4.6";
+      const snippet = JSON.stringify({
+        "openai.com/v1": {
+          "Override OpenAI Base URL": base,
+          "OpenAI API Key": key,
+          "Model": model
+        }
+      }, null, 2);
+      $("#cursorSnippet").textContent = "Base URL: " + base + "\\nAPI Key:  " + key + "\\nModel:    " + model;
+    }
+    $("#gatewayApiKey").addEventListener("input", updateCursorSnippet);
+    if (document.querySelector('[name="upstream_model"]')) {
+      document.querySelector('[name="upstream_model"]').addEventListener("input", updateCursorSnippet);
+    }
+    setTimeout(updateCursorSnippet, 500);
+
+    $("#btnCopyCursorSnippet").onclick = () => {
+      const t = $("#cursorSnippet").textContent;
+      copyText(t, "已复制 Cursor 配置信息");
+    };
+
     function authHeaders() {
       const k = $("#adminKey").value.trim();
       if (!k) throw new Error("请先填写 Admin 密钥（ADMIN_KEY）");
@@ -500,6 +558,7 @@ _ADMIN_HTML = """<!DOCTYPE html>
         const j = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(j.detail || r.statusText || "加载失败");
         fillForm(j.settings || {});
+        updateCursorSnippet();
         setMsg("已加载。路径: " + (j.config_path || ""), "ok");
       } catch (e) {
         setMsg(String(e.message || e), "err");

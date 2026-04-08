@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app.admin import router as admin_router
@@ -106,6 +107,43 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="OpenRouter OpenAI Gateway", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or str(uuid4())
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-Id"] = request_id
+    return response
+
+
+@app.middleware("http")
+async def limit_request_body(request: Request, call_next):
+    settings = get_settings()
+    max_bytes = settings.max_request_body_mb * 1024 * 1024
+    cl = request.headers.get("content-length")
+    if cl and int(cl) > max_bytes:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "error": {
+                    "message": f"Request body too large (max {settings.max_request_body_mb}MB)",
+                    "type": "invalid_request_error",
+                    "code": 413,
+                }
+            },
+        )
+    return await call_next(request)
+
+
 app.include_router(admin_router, prefix="/admin")
 
 
@@ -133,7 +171,15 @@ async def list_models(
                 "id": mid,
                 "object": "model",
                 "created": 0,
-                "owned_by": "openrouter",
+                "owned_by": "anthropic",
+                "permission": [],
+                "root": mid,
+                "parent": None,
+                "context_length": 200000,
+                "capabilities": {
+                    "vision": True,
+                    "function_calling": True,
+                },
             }
         ],
     }
@@ -150,6 +196,33 @@ async def _enqueue_persist(
         q.put_nowait(job)
     except asyncio.QueueFull:
         logger.warning("persist queue full; dropping log for session %s", job.external_session_id)
+
+
+def _log_chat_upstream_meta(
+    settings: Settings,
+    merged: dict[str, Any],
+    *,
+    streamed: bool,
+    response_model: str | None,
+    ok: bool,
+    err_short: str | None = None,
+) -> None:
+    if not settings.log_chat_metadata:
+        return
+    tools = merged.get("tools")
+    n_tools = len(tools) if isinstance(tools, list) else 0
+    extra = ""
+    if err_short:
+        extra = " err=" + err_short[:300].replace("\n", " ")
+    logger.info(
+        "chat_upstream_meta ok=%s stream=%s tools=%d request_model=%s response_model=%s%s",
+        ok,
+        streamed,
+        n_tools,
+        merged.get("model"),
+        response_model,
+        extra,
+    )
 
 
 @app.post("/v1/chat/completions")
@@ -183,6 +256,7 @@ async def chat_completions(
             merged,
             session_external,
             t0,
+            settings,
         )
 
     try:
@@ -201,7 +275,17 @@ async def chat_completions(
                 error_text=str(e),
             ),
         )
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={
+                "error": {
+                    "message": str(e),
+                    "type": "proxy_error",
+                    "code": 502,
+                }
+            },
+            headers={"X-Session-Id": session_external},
+        )
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
     try:
@@ -210,12 +294,25 @@ async def chat_completions(
         payload = None
 
     usage = None
+    resp_model: str | None = None
     if isinstance(payload, dict):
         usage = payload.get("usage")
         if isinstance(usage, dict):
             pass
         else:
             usage = None
+        rm = payload.get("model")
+        if isinstance(rm, str) and rm:
+            resp_model = rm
+
+    _log_chat_upstream_meta(
+        settings,
+        merged,
+        streamed=False,
+        response_model=resp_model,
+        ok=r.is_success,
+        err_short=r.text if not r.is_success else None,
+    )
 
     await _enqueue_persist(
         request.app,
@@ -230,12 +327,67 @@ async def chat_completions(
         ),
     )
 
+    if payload is None or (not r.is_success and not isinstance(payload, dict)):
+        payload = {
+            "error": {
+                "message": r.text,
+                "type": "upstream_error",
+                "code": r.status_code,
+            }
+        }
+    elif not r.is_success and isinstance(payload, dict) and "error" not in payload:
+        payload = {
+            "error": {
+                "message": json.dumps(payload, ensure_ascii=False),
+                "type": "upstream_error",
+                "code": r.status_code,
+            }
+        }
+
     out = JSONResponse(
-        content=payload if payload is not None else {"error": r.text},
+        content=payload,
         status_code=r.status_code,
         headers={"X-Session-Id": session_external},
     )
     return out
+
+
+@app.post("/v1/embeddings")
+async def embeddings_proxy(
+    request: Request,
+    body: dict[str, Any] = Body(...),
+    _: None = Depends(verify_gateway_key),
+    settings: Settings = Depends(get_settings),
+) -> Response:
+    """Proxy embeddings requests to upstream (OpenRouter / OpenAI compatible)."""
+    key = settings.embedding_api_key or settings.openrouter_api_key
+    if not key or not key.strip():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Embedding API key is not configured",
+        )
+    url = f"{settings.embedding_base_url.rstrip('/')}/embeddings"
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    if "model" not in body or not body["model"]:
+        body["model"] = settings.embedding_model
+    client: httpx.AsyncClient = request.app.state.http_client
+    try:
+        r = await client.post(url, headers=headers, json=body)
+    except httpx.RequestError as e:
+        return JSONResponse(
+            status_code=502,
+            content={"error": {"message": str(e), "type": "proxy_error", "code": 502}},
+        )
+    try:
+        payload = r.json()
+    except Exception:
+        payload = None
+    if payload is None:
+        payload = {"error": {"message": r.text, "type": "upstream_error", "code": r.status_code}}
+    return JSONResponse(content=payload, status_code=r.status_code)
 
 
 async def _stream_chat(
@@ -246,6 +398,7 @@ async def _stream_chat(
     merged: dict[str, Any],
     session_external: str,
     t0: float,
+    settings: Settings,
 ) -> StreamingResponse:
     parts: list[str] = []
     last_usage: dict[str, Any] | None = None
@@ -253,6 +406,9 @@ async def _stream_chat(
     async def gen():
         nonlocal last_usage
         err: str | None = None
+        stream_resp_model: str | None = None
+        upstream_ok = False
+        got_done = False
         tool_bucket: dict[int, dict[str, Any]] = {}
         last_finish: str | None = None
         try:
@@ -268,12 +424,24 @@ async def _stream_chat(
                         )
                         + "\n\n"
                     )
+                    upstream_ok = False
                     return
+                upstream_ok = True
+                got_done = False
                 async for line in r.aiter_lines():
+                    if await request.is_disconnected():
+                        break
                     yield line + "\n\n"
                     parsed = parse_sse_line(line)
-                    if not parsed or parsed.get("__done__"):
+                    if not parsed:
                         continue
+                    if parsed.get("__done__"):
+                        got_done = True
+                        continue
+                    if isinstance(parsed, dict):
+                        m = parsed.get("model")
+                        if isinstance(m, str) and m:
+                            stream_resp_model = m
                     accumulate_delta(parsed, parts)
                     accumulate_tool_calls(parsed, tool_bucket)
                     fr = finish_reason_from_chunk(parsed)
@@ -293,6 +461,16 @@ async def _stream_chat(
                 + "\n\n"
             )
         finally:
+            if not got_done:
+                yield "data: [DONE]\n\n"
+            _log_chat_upstream_meta(
+                settings,
+                merged,
+                streamed=True,
+                response_model=stream_resp_model,
+                ok=upstream_ok and err is None,
+                err_short=err,
+            )
             latency_ms = int((time.perf_counter() - t0) * 1000)
             full_text = "".join(parts)
             tclist = tool_calls_list(tool_bucket)
@@ -336,5 +514,6 @@ async def _stream_chat(
             "X-Session-Id": session_external,
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         },
     )

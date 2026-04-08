@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     upstream_model: str = "anthropic/claude-opus-4.6"
     upstream_base_url: str = "https://openrouter.ai/api/v1"
 
+    openrouter_http_referer: str = ""
+    openrouter_app_title: str = ""
+
+    loose_tools_passthrough: bool = False
+    log_chat_metadata: bool = False
+
     identity_prompt_enabled: bool = False
     identity_prompt: str = (
         "我是 Claude Opus 4.6，来自 Anthropic 的 Claude 4.6 模型家族。"
@@ -48,6 +54,8 @@ class Settings(BaseSettings):
     connect_timeout_seconds: float = 30.0
     http_max_connections: int = 100
     http_max_keepalive: int = 20
+
+    max_request_body_mb: int = 50
 
     persist_queue_max: int = 10000
     embed_queue_max: int = 10000
