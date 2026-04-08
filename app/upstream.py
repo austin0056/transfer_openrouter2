@@ -185,8 +185,10 @@ def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) ->
         if not isinstance(m, dict):
             continue
         if m.get("role") == "tool":
-            n = m.get("name")
-            if not isinstance(n, str) or not n.strip():
+            # tool 结果消息须有 tool_call_id 或 name 之一才有效
+            has_tool_call_id = isinstance(m.get("tool_call_id"), str) and m["tool_call_id"].strip()
+            has_name = isinstance(m.get("name"), str) and m["name"].strip()
+            if not has_tool_call_id and not has_name:
                 continue
         cleaned.append(m)
     body["messages"] = cleaned
@@ -236,9 +238,9 @@ def _bridge_max_completion_tokens(body: dict[str, Any]) -> None:
 
 
 def _ensure_min_max_tokens(body: dict[str, Any]) -> None:
-    """移除客户端设的 max_tokens 限制，让上游使用模型最大输出能力。"""
-    body.pop("max_tokens", None)
+    """确保 max_tokens 足够大，不限制模型输出。"""
     body.pop("max_completion_tokens", None)
+    body["max_tokens"] = 128000
 
 
 # OpenAI / OpenRouter 已知接受的顶层字段白名单
