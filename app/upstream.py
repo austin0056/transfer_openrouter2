@@ -584,12 +584,63 @@ def _inject_cache_breakpoints(body: dict[str, Any], settings: Settings) -> None:
                 last_block["cache_control"] = cache_marker
 
 
+def _sort_tools(body: dict[str, Any]) -> None:
+    """按工具名称排序，确保 tools 列表在不同请求间顺序一致，最大化缓存前缀命中。"""
+    tools = body.get("tools")
+    if not isinstance(tools, list) or len(tools) <= 1:
+        return
+    try:
+        body["tools"] = sorted(
+            tools,
+            key=lambda t: (t.get("function", {}).get("name", "") if isinstance(t, dict) else ""),
+        )
+    except Exception:
+        pass  # 排序失败不影响功能
+
+
+def _truncate_old_tool_results(body: dict[str, Any], settings: Settings) -> None:
+    """截断历史 tool result，保留最近 N 轮完整，更早的截断到 max_chars。
+
+    这样做的好处：
+    1. 减少重复携带的 token（省钱）
+    2. 被截断的旧消息内容固定不变，后续请求前缀完全一致（提高缓存命中）
+    """
+    if not settings.tool_result_truncate_enabled:
+        return
+    msgs = body.get("messages")
+    if not isinstance(msgs, list):
+        return
+
+    max_chars = settings.tool_result_max_chars
+    keep_recent = settings.tool_result_keep_recent_turns
+
+    # 找到所有 assistant 消息的位置（每个 assistant 消息代表一"轮"）
+    assistant_indices = [i for i, m in enumerate(msgs)
+                         if isinstance(m, dict) and m.get("role") == "assistant"]
+    if len(assistant_indices) <= keep_recent:
+        return  # 对话还很短，不截断
+
+    # 截断边界：keep_recent 轮之前的所有 tool 消息
+    cutoff_idx = assistant_indices[-keep_recent]
+
+    for i, m in enumerate(msgs):
+        if i >= cutoff_idx:
+            break  # 最近 N 轮，保持完整
+        if not isinstance(m, dict) or m.get("role") != "tool":
+            continue
+        c = m.get("content")
+        if isinstance(c, str) and len(c) > max_chars:
+            m["content"] = c[:max_chars] + f"\n\n[...truncated, original {len(c)} chars]"
+
+
 def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) -> dict[str, Any]:
     """Preserve tools/tool_choice/parallel_tool_calls etc.; only override model + Anthropic routing."""
     body = deepcopy(client_body)
     _adapt_openai_body_for_upstream(body, settings)
     _inject_identity_prompt(body, settings)
     _inject_efficiency_prompt(body, settings)
+    _sort_tools(body)
+    _truncate_old_tool_results(body, settings)
     body["model"] = settings.upstream_model
     body["provider"] = {"only": ["anthropic"], "allow_fallbacks": False}
     if settings.cache_enabled:

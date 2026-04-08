@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     efficiency_prompt_enabled: bool = True
     efficiency_prompt: str = ""
 
+    # 历史 tool result 截断：保留最近 N 轮完整，更早的截断到 max_chars
+    tool_result_truncate_enabled: bool = True
+    tool_result_keep_recent_turns: int = 2
+    tool_result_max_chars: int = 800
+
     https_proxy: str | None = None
 
     database_url: str | None = None
