@@ -65,8 +65,46 @@ def _normalize_tool_call_arguments(fn: dict[str, Any]) -> None:
         fn["arguments"] = json.dumps(raw, ensure_ascii=False)
 
 
+def _convert_top_level_system(body: dict[str, Any]) -> None:
+    """Anthropic 原生格式把 system 放顶层；转换为 OpenAI 格式的 messages[0]。"""
+    sys_field = body.pop("system", None)
+    if sys_field is None:
+        return
+    # system 可能是字符串或 content-block 数组
+    if isinstance(sys_field, str):
+        text = sys_field
+    elif isinstance(sys_field, list):
+        parts: list[str] = []
+        for block in sys_field:
+            if isinstance(block, dict):
+                t = block.get("text")
+                if isinstance(t, str) and t:
+                    parts.append(t)
+            elif isinstance(block, str):
+                parts.append(block)
+        text = "\n".join(parts)
+    else:
+        return
+    if not text.strip():
+        return
+    msgs = body.get("messages")
+    if not isinstance(msgs, list):
+        body["messages"] = [{"role": "system", "content": text}]
+        return
+    # 如果 messages 已有 system 消息，合并；否则插入开头
+    if msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system":
+        c0 = msgs[0].get("content")
+        if isinstance(c0, str):
+            msgs[0]["content"] = text + "\n\n" + c0
+        else:
+            msgs.insert(0, {"role": "system", "content": text})
+    else:
+        msgs.insert(0, {"role": "system", "content": text})
+
+
 def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) -> None:
     """转换层：兼容分发/客户端脏负载，上游无需、分发侧也无需改代码。"""
+    _convert_top_level_system(body)
     allowed: set[str] = set()
     loose = settings.loose_tools_passthrough
     tools = body.get("tools")
@@ -181,7 +219,7 @@ _KNOWN_BODY_KEYS: set[str] = {
     "service_tier",
     # OpenRouter extensions
     "provider", "cache_control", "transforms", "route",
-    "reasoning_effort",
+    "reasoning_effort", "metadata",
 }
 
 
