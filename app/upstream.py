@@ -238,9 +238,17 @@ def _bridge_max_completion_tokens(body: dict[str, Any]) -> None:
 
 
 def _ensure_min_max_tokens(body: dict[str, Any]) -> None:
-    """确保 max_tokens 足够大，不限制模型输出。"""
+    """桥接 max_completion_tokens，有 tools 时保底 16384 防截断。"""
     body.pop("max_completion_tokens", None)
-    body["max_tokens"] = 1000000
+    mt = body.get("max_tokens")
+    if mt is None:
+        return
+    try:
+        val = int(mt)
+    except (TypeError, ValueError):
+        return
+    if val < 16384 and body.get("tools"):
+        body["max_tokens"] = 16384
 
 
 # OpenAI / OpenRouter 已知接受的顶层字段白名单
