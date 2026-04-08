@@ -240,7 +240,7 @@ def _bridge_max_completion_tokens(body: dict[str, Any]) -> None:
 def _ensure_min_max_tokens(body: dict[str, Any]) -> None:
     """确保 max_tokens 足够大，不限制模型输出。"""
     body.pop("max_completion_tokens", None)
-    body["max_tokens"] = 128000
+    body["max_tokens"] = 1000000
 
 
 # OpenAI / OpenRouter 已知接受的顶层字段白名单
