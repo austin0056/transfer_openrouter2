@@ -271,25 +271,44 @@ async def chat_completions(
     headers = openrouter_headers(settings)
     client: httpx.AsyncClient = request.app.state.http_client
 
-    # 调试日志：记录发给上游的 messages 结构概要
+    # 调试日志：记录发给上游的最终 messages 结构（含 content 详情）
     if settings.log_chat_metadata:
         _msgs = merged.get("messages") or []
         msg_summary = []
-        for _m in _msgs:
+        for i, _m in enumerate(_msgs):
             if not isinstance(_m, dict):
                 continue
             r = _m.get("role", "?")
+            c = _m.get("content")
             has_tc = bool(_m.get("tool_calls"))
             tcid = _m.get("tool_call_id", "")
-            info = r
+            # content 概要
+            if isinstance(c, str):
+                c_info = f"str:{len(c)}"
+            elif isinstance(c, list):
+                block_infos = []
+                for b in c:
+                    if isinstance(b, dict):
+                        bt = b.get("type", "?")
+                        txt = b.get("text", "")
+                        tl = len(txt) if isinstance(txt, str) else -1
+                        block_infos.append(f"{bt}:{tl}")
+                    else:
+                        block_infos.append(f"raw")
+                c_info = f"[{','.join(block_infos)}]"
+            elif c is None:
+                c_info = "null"
+            else:
+                c_info = f"other:{type(c).__name__}"
+            info = f"{i}:{r}({c_info})"
             if has_tc:
                 tc_names = [tc.get("function", {}).get("name", "?") for tc in _m.get("tool_calls", []) if isinstance(tc, dict)]
-                info += f"[tool_calls:{','.join(tc_names)}]"
+                info += f"[tc:{','.join(tc_names)}]"
             if tcid:
-                info += f"[tool_call_id:{tcid[:12]}]"
+                info += f"[tcid:{tcid[:12]}]"
             msg_summary.append(info)
         logger.info(
-            "chat_request_debug session=%s msgs=[%s] max_tokens=%s tools=%d",
+            "chat_merged_debug session=%s msgs=[%s] max_tokens=%s tools=%d",
             session_external,
             " → ".join(msg_summary),
             merged.get("max_tokens"),

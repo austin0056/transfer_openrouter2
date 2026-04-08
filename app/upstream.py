@@ -302,6 +302,46 @@ def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) ->
     _bridge_max_completion_tokens(body)
     _ensure_min_max_tokens(body)
     _strip_unknown_fields(body)
+    _final_sanitize_messages(body)
+
+
+def _sanitize_content(content: Any) -> Any:
+    """清洗 content：字符串保持原样，数组剥离空 text block。"""
+    if isinstance(content, str):
+        return content if content.strip() else None
+    if isinstance(content, list):
+        good: list[Any] = []
+        for block in content:
+            if isinstance(block, dict):
+                btype = block.get("type", "text")
+                if btype == "text":
+                    txt = block.get("text")
+                    if isinstance(txt, str) and txt.strip():
+                        good.append(block)
+                else:
+                    good.append(block)
+            elif isinstance(block, str) and block.strip():
+                good.append(block)
+        return good if good else None
+    return content
+
+
+def _final_sanitize_messages(body: dict[str, Any]) -> None:
+    """最终清洗：确保发给上游的每条 user/system 消息 content 非空。"""
+    msgs = body.get("messages")
+    if not isinstance(msgs, list):
+        return
+    result: list[Any] = []
+    for m in msgs:
+        if not isinstance(m, dict):
+            continue
+        if m.get("role") in ("user", "system"):
+            sanitized = _sanitize_content(m.get("content"))
+            if sanitized is None:
+                continue
+            m["content"] = sanitized
+        result.append(m)
+    body["messages"] = result
 
 
 def _bridge_max_completion_tokens(body: dict[str, Any]) -> None:
