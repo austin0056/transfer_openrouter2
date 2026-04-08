@@ -20,12 +20,29 @@ def _vector_literal(vec: list[float]) -> str:
     return "[" + ",".join(f"{x:.8f}" if x == int(x) else str(x) for x in vec) + "]"
 
 
+async def _check_pgvector(pool: asyncpg.Pool) -> bool:
+    """检测数据库是否安装了 pgvector 扩展。"""
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchval(
+                "SELECT 1 FROM pg_extension WHERE extname = 'vector'"
+            )
+            return row is not None
+    except Exception:
+        return False
+
+
 async def embed_worker(
     app: FastAPI,
     pool: asyncpg.Pool,
     queue: asyncio.Queue[EmbedJob | None],
 ) -> None:
     """每次任务使用 app.state.http 客户端与 get_settings()，避免 /admin 保存时 aclose 旧 client 后仍引用已关闭实例。"""
+    # 启动时检测 pgvector，若不存在则覆盖设置
+    has_pgvector = await _check_pgvector(pool)
+    if not has_pgvector:
+        logger.warning("pgvector extension not found; falling back to double precision[] for embeddings")
+
     while True:
         job = await queue.get()
         if job is None:
@@ -33,7 +50,9 @@ async def embed_worker(
             break
         try:
             client: httpx.AsyncClient = app.state.http_client
-            await _flush_batch(pool, client, get_settings(), [job])
+            settings = get_settings()
+            use_pgvector = settings.embedding_use_pgvector and has_pgvector
+            await _flush_batch(pool, client, settings, [job], use_pgvector=use_pgvector)
         except Exception:
             logger.exception("embedding failed for turn %s", job.turn_id)
         finally:
@@ -45,6 +64,8 @@ async def _flush_batch(
     client: httpx.AsyncClient,
     settings: Settings,
     batch: list[EmbedJob],
+    *,
+    use_pgvector: bool = True,
 ) -> None:
     if not batch:
         return
@@ -87,7 +108,7 @@ async def _flush_batch(
                         settings.embedding_dim,
                     )
                     continue
-                if settings.embedding_use_pgvector:
+                if use_pgvector:
                     await conn.execute(
                         """
                         INSERT INTO embeddings (turn_id, embedding, embedding_model)
