@@ -190,6 +190,11 @@ def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) ->
             has_name = isinstance(m.get("name"), str) and m["name"].strip()
             if not has_tool_call_id and not has_name:
                 continue
+        # Anthropic 拒绝空内容的 user/system 消息
+        if m.get("role") in ("user", "system"):
+            c = m.get("content")
+            if c is None or (isinstance(c, str) and not c.strip()) or (isinstance(c, list) and len(c) == 0):
+                continue
         cleaned.append(m)
     body["messages"] = cleaned
 
