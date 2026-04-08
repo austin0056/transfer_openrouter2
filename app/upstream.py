@@ -235,21 +235,10 @@ def _bridge_max_completion_tokens(body: dict[str, Any]) -> None:
         pass
 
 
-# Cursor plan / agent 模式生成 tool_call 写文件时，4096 远远不够
-_MIN_MAX_TOKENS = 16384
-
-
 def _ensure_min_max_tokens(body: dict[str, Any]) -> None:
-    """如果 max_tokens 设得过小且请求包含 tools，自动抬高到保底值。"""
-    mt = body.get("max_tokens")
-    if mt is None:
-        return
-    try:
-        val = int(mt)
-    except (TypeError, ValueError):
-        return
-    if val < _MIN_MAX_TOKENS and body.get("tools"):
-        body["max_tokens"] = _MIN_MAX_TOKENS
+    """移除客户端设的 max_tokens 限制，让上游使用模型最大输出能力。"""
+    body.pop("max_tokens", None)
+    body.pop("max_completion_tokens", None)
 
 
 # OpenAI / OpenRouter 已知接受的顶层字段白名单
