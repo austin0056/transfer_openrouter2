@@ -150,9 +150,116 @@ def _merge_content(target: dict[str, Any], source: dict[str, Any]) -> None:
     target["content"] = blocks if blocks else ""
 
 
+def _convert_anthropic_content_blocks(body: dict[str, Any]) -> None:
+    """将 Anthropic 原生 content block（tool_use / tool_result）转为 OpenAI 格式。
+
+    Anthropic 格式:
+      assistant: {"content": [{"type":"text","text":"..."}, {"type":"tool_use","id":"x","name":"fn","input":{...}}]}
+      user:      {"content": [{"type":"tool_result","tool_use_id":"x","content":"..."}]}
+
+    OpenAI 格式:
+      assistant: {"content":"...", "tool_calls": [{"id":"x","type":"function","function":{"name":"fn","arguments":"{...}"}}]}
+      tool:      {"role":"tool", "tool_call_id":"x", "content":"..."}
+    """
+    msgs = body.get("messages")
+    if not isinstance(msgs, list):
+        return
+    converted: list[dict[str, Any]] = []
+    for m in msgs:
+        if not isinstance(m, dict):
+            converted.append(m)
+            continue
+        content = m.get("content")
+        if not isinstance(content, list):
+            converted.append(m)
+            continue
+
+        # 检查是否包含 Anthropic 原生 block
+        has_tool_use = any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content)
+        has_tool_result = any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+
+        if m.get("role") == "assistant" and has_tool_use:
+            # 提取文本和 tool_use 块
+            text_parts: list[str] = []
+            tool_calls: list[dict[str, Any]] = []
+            other_blocks: list[Any] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text":
+                    txt = block.get("text", "")
+                    if isinstance(txt, str) and txt.strip():
+                        text_parts.append(txt)
+                elif block.get("type") == "tool_use":
+                    tc_id = block.get("id", "")
+                    tc_name = block.get("name", "")
+                    tc_input = block.get("input", {})
+                    if isinstance(tc_input, str):
+                        args_str = tc_input
+                    else:
+                        args_str = json.dumps(tc_input, ensure_ascii=False) if tc_input else "{}"
+                    tool_calls.append({
+                        "id": tc_id,
+                        "type": "function",
+                        "function": {"name": tc_name, "arguments": args_str},
+                    })
+                else:
+                    other_blocks.append(block)
+            new_m: dict[str, Any] = {"role": "assistant"}
+            if text_parts:
+                new_m["content"] = "\n".join(text_parts)
+            else:
+                new_m["content"] = None
+            if tool_calls:
+                new_m["tool_calls"] = tool_calls
+            converted.append(new_m)
+
+        elif m.get("role") == "user" and has_tool_result:
+            # 拆分 tool_result 为独立 tool 消息，保留其他内容为 user 消息
+            text_blocks: list[Any] = []
+            tool_results: list[dict[str, Any]] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_result":
+                    tc_id = block.get("tool_use_id", "")
+                    # tool_result 的 content 可能是字符串或 content block 数组
+                    rc = block.get("content", "")
+                    if isinstance(rc, list):
+                        parts = []
+                        for rb in rc:
+                            if isinstance(rb, dict) and rb.get("type") == "text":
+                                parts.append(rb.get("text", ""))
+                            elif isinstance(rb, str):
+                                parts.append(rb)
+                        rc = "\n".join(parts)
+                    elif not isinstance(rc, str):
+                        rc = json.dumps(rc, ensure_ascii=False) if rc else ""
+                    tool_results.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": rc or "",
+                    })
+                else:
+                    text_blocks.append(block)
+            # 先输出 tool 消息
+            converted.extend(tool_results)
+            # 如果还有文本内容，保留为 user 消息
+            if text_blocks:
+                sanitized = [b for b in text_blocks
+                             if isinstance(b, dict) and b.get("type") == "text"
+                             and isinstance(b.get("text"), str) and b["text"].strip()]
+                if sanitized:
+                    converted.append({"role": "user", "content": sanitized})
+        else:
+            converted.append(m)
+    body["messages"] = converted
+
+
 def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) -> None:
     """转换层：兼容分发/客户端脏负载，上游无需、分发侧也无需改代码。"""
     _convert_top_level_system(body)
+    _convert_anthropic_content_blocks(body)
     allowed: set[str] = set()
     loose = settings.loose_tools_passthrough
     tools = body.get("tools")
