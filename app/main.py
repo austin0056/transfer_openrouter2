@@ -244,6 +244,31 @@ async def chat_completions(
     headers = openrouter_headers(settings)
     client: httpx.AsyncClient = request.app.state.http_client
 
+    # 调试日志：记录发给上游的 messages 结构概要
+    if settings.log_chat_metadata:
+        _msgs = merged.get("messages") or []
+        msg_summary = []
+        for _m in _msgs:
+            if not isinstance(_m, dict):
+                continue
+            r = _m.get("role", "?")
+            has_tc = bool(_m.get("tool_calls"))
+            tcid = _m.get("tool_call_id", "")
+            info = r
+            if has_tc:
+                tc_names = [tc.get("function", {}).get("name", "?") for tc in _m.get("tool_calls", []) if isinstance(tc, dict)]
+                info += f"[tool_calls:{','.join(tc_names)}]"
+            if tcid:
+                info += f"[tool_call_id:{tcid[:12]}]"
+            msg_summary.append(info)
+        logger.info(
+            "chat_request_debug session=%s msgs=[%s] max_tokens=%s tools=%d",
+            session_external,
+            " → ".join(msg_summary),
+            merged.get("max_tokens"),
+            len(merged.get("tools") or []),
+        )
+
     stream = bool(merged.get("stream"))
     t0 = time.perf_counter()
 

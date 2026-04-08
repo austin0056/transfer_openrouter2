@@ -238,9 +238,10 @@ def _bridge_max_completion_tokens(body: dict[str, Any]) -> None:
 
 
 def _ensure_min_max_tokens(body: dict[str, Any]) -> None:
-    """移除客户端的 max_tokens 限制，让 OpenRouter 根据 input 自动计算最大可用输出。"""
+    """设置合理的 max_tokens，Anthropic 要求必传且 input+output ≤ context limit。"""
     body.pop("max_completion_tokens", None)
-    body.pop("max_tokens", None)
+    # Anthropic 模型要求 max_tokens 必传；设 64000 留足输出空间且不会撞 1M 上限
+    body["max_tokens"] = 64000
 
 
 # OpenAI / OpenRouter 已知接受的顶层字段白名单
