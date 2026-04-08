@@ -572,6 +572,25 @@ def _inject_cache_breakpoints(body: dict[str, Any], settings: Settings) -> None:
     if not isinstance(msgs, list) or not msgs:
         return
 
+    # 先清除所有已有的 cache_control（分发层可能已经加了）
+    for m in msgs:
+        if not isinstance(m, dict):
+            continue
+        c = m.get("content")
+        if isinstance(c, list):
+            for block in c:
+                if isinstance(block, dict):
+                    block.pop("cache_control", None)
+        elif isinstance(c, dict):
+            c.pop("cache_control", None)
+    tools = body.get("tools")
+    if isinstance(tools, list):
+        for t in tools:
+            if isinstance(t, dict):
+                fn = t.get("function")
+                if isinstance(fn, dict):
+                    fn.pop("cache_control", None)
+
     # Breakpoint 1: system prompt
     if msgs[0].get("role") == "system":
         c = msgs[0].get("content")
