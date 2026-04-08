@@ -126,6 +126,30 @@ def _is_empty_content(content: Any) -> bool:
     return False
 
 
+def _to_content_blocks(content: Any) -> list[dict[str, Any]]:
+    """将 content 统一为 content-block 数组。"""
+    if content is None:
+        return []
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content.strip() else []
+    if isinstance(content, list):
+        return content
+    return [{"type": "text", "text": str(content)}]
+
+
+def _merge_content(target: dict[str, Any], source: dict[str, Any]) -> None:
+    """将 source 的 content 追加到 target，统一为 content-block 数组或拼接字符串。"""
+    tc = target.get("content")
+    sc = source.get("content")
+    # 如果两边都是字符串，直接拼接
+    if isinstance(tc, str) and isinstance(sc, str):
+        target["content"] = tc + "\n" + sc if tc.strip() and sc.strip() else (tc or sc)
+        return
+    # 否则转为 content-block 数组合并
+    blocks = _to_content_blocks(tc) + _to_content_blocks(sc)
+    target["content"] = blocks if blocks else ""
+
+
 def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) -> None:
     """转换层：兼容分发/客户端脏负载，上游无需、分发侧也无需改代码。"""
     _convert_top_level_system(body)
@@ -204,12 +228,12 @@ def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) ->
     msgs = body.get("messages")
     if not isinstance(msgs, list):
         return
-    cleaned: list[Any] = []
+    # 第一遍：过滤无效消息
+    filtered: list[Any] = []
     for m in msgs:
         if not isinstance(m, dict):
             continue
         if m.get("role") == "tool":
-            # tool 结果消息须有 tool_call_id 或 name 之一才有效
             has_tool_call_id = isinstance(m.get("tool_call_id"), str) and m["tool_call_id"].strip()
             has_name = isinstance(m.get("name"), str) and m["name"].strip()
             if not has_tool_call_id and not has_name:
@@ -218,7 +242,16 @@ def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) ->
         if m.get("role") in ("user", "system"):
             if _is_empty_content(m.get("content")):
                 continue
-        cleaned.append(m)
+        filtered.append(m)
+
+    # 第二遍：合并连续同角色消息（Anthropic 要求 user/assistant 严格交替）
+    cleaned: list[Any] = []
+    for m in filtered:
+        if cleaned and m.get("role") == cleaned[-1].get("role") and m.get("role") in ("user", "system"):
+            # 将当前消息内容合并到上一条
+            _merge_content(cleaned[-1], m)
+        else:
+            cleaned.append(m)
     body["messages"] = cleaned
 
     for m in cleaned:
