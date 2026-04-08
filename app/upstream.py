@@ -102,6 +102,30 @@ def _convert_top_level_system(body: dict[str, Any]) -> None:
         msgs.insert(0, {"role": "system", "content": text})
 
 
+def _is_empty_content(content: Any) -> bool:
+    """判断消息内容是否为空（None、空字符串、空数组、全空文本 content-block）。"""
+    if content is None:
+        return True
+    if isinstance(content, str):
+        return not content.strip()
+    if isinstance(content, list):
+        if len(content) == 0:
+            return True
+        # content-block 数组：如果全部块的文本为空则视为空
+        for block in content:
+            if isinstance(block, dict):
+                t = block.get("text")
+                if isinstance(t, str) and t.strip():
+                    return False
+                # 非 text 类型的块（如 image）视为非空
+                if block.get("type") and block["type"] != "text":
+                    return False
+            elif isinstance(block, str) and block.strip():
+                return False
+        return True
+    return False
+
+
 def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) -> None:
     """转换层：兼容分发/客户端脏负载，上游无需、分发侧也无需改代码。"""
     _convert_top_level_system(body)
@@ -192,8 +216,7 @@ def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) ->
                 continue
         # Anthropic 拒绝空内容的 user/system 消息
         if m.get("role") in ("user", "system"):
-            c = m.get("content")
-            if c is None or (isinstance(c, str) and not c.strip()) or (isinstance(c, list) and len(c) == 0):
+            if _is_empty_content(m.get("content")):
                 continue
         cleaned.append(m)
     body["messages"] = cleaned
