@@ -493,6 +493,59 @@ def _strip_unknown_fields(body: dict[str, Any]) -> None:
             body.pop(k)
 
 
+def _inject_cache_breakpoints(body: dict[str, Any], settings: Settings) -> None:
+    """在 system prompt、tools 末尾、最近的对话转折点设置 cache breakpoint。
+
+    Anthropic prompt caching 按前缀匹配：
+    - breakpoint 1: system prompt 末尾 → tools 定义和 system 在所有请求间共享缓存
+    - breakpoint 2: tools 最后一个定义 → 确保 tools 列表被缓存
+    - breakpoint 3: 最后一条 user/tool 消息之前 → 上一轮的历史被缓存
+    最多 4 个 breakpoint（Anthropic 限制）。
+    """
+    if not settings.cache_enabled:
+        return
+    cache_marker = {"type": "ephemeral"}
+
+    msgs = body.get("messages")
+    if not isinstance(msgs, list) or not msgs:
+        return
+
+    # Breakpoint 1: system prompt
+    if msgs[0].get("role") == "system":
+        c = msgs[0].get("content")
+        if isinstance(c, str):
+            # 转为 content block 数组以便加 cache_control
+            msgs[0]["content"] = [{"type": "text", "text": c, "cache_control": cache_marker}]
+        elif isinstance(c, list) and c:
+            last_block = c[-1]
+            if isinstance(last_block, dict):
+                last_block["cache_control"] = cache_marker
+
+    # Breakpoint 2: tools 列表最后一项
+    tools = body.get("tools")
+    if isinstance(tools, list) and tools:
+        last_tool = tools[-1]
+        if isinstance(last_tool, dict):
+            fn = last_tool.get("function")
+            if isinstance(fn, dict):
+                fn["cache_control"] = cache_marker
+
+    # Breakpoint 3: 倒数第二条 user/tool 消息（即上一轮末尾），让历史消息被缓存
+    # 找到最后一条 user/tool 消息的前一条 user/tool 消息
+    user_tool_indices = [i for i, m in enumerate(msgs)
+                         if isinstance(m, dict) and m.get("role") in ("user", "tool")]
+    if len(user_tool_indices) >= 2:
+        prev_idx = user_tool_indices[-2]
+        prev_msg = msgs[prev_idx]
+        c = prev_msg.get("content")
+        if isinstance(c, str):
+            prev_msg["content"] = [{"type": "text", "text": c, "cache_control": cache_marker}]
+        elif isinstance(c, list) and c:
+            last_block = c[-1]
+            if isinstance(last_block, dict):
+                last_block["cache_control"] = cache_marker
+
+
 def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) -> dict[str, Any]:
     """Preserve tools/tool_choice/parallel_tool_calls etc.; only override model + Anthropic routing."""
     body = deepcopy(client_body)
@@ -507,6 +560,7 @@ def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) 
             body["cache_control"] = {"type": "ephemeral"}
     else:
         body.pop("cache_control", None)
+    _inject_cache_breakpoints(body, settings)
     return body
 
 
