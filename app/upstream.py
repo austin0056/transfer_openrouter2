@@ -218,6 +218,7 @@ def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) ->
             m["role"] = "system"
 
     _bridge_max_completion_tokens(body)
+    _ensure_min_max_tokens(body)
     _strip_unknown_fields(body)
 
 
@@ -232,6 +233,23 @@ def _bridge_max_completion_tokens(body: dict[str, Any]) -> None:
         body["max_tokens"] = int(mct)
     except (TypeError, ValueError):
         pass
+
+
+# Cursor plan / agent 模式生成 tool_call 写文件时，4096 远远不够
+_MIN_MAX_TOKENS = 16384
+
+
+def _ensure_min_max_tokens(body: dict[str, Any]) -> None:
+    """如果 max_tokens 设得过小且请求包含 tools，自动抬高到保底值。"""
+    mt = body.get("max_tokens")
+    if mt is None:
+        return
+    try:
+        val = int(mt)
+    except (TypeError, ValueError):
+        return
+    if val < _MIN_MAX_TOKENS and body.get("tools"):
+        body["max_tokens"] = _MIN_MAX_TOKENS
 
 
 # OpenAI / OpenRouter 已知接受的顶层字段白名单
