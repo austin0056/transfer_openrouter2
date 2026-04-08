@@ -37,6 +37,44 @@ def _inject_identity_prompt(body: dict[str, Any], settings: Settings) -> None:
         msgs.insert(0, {"role": "system", "content": guidance})
 
 
+_DEFAULT_EFFICIENCY_PROMPT = (
+    "[INTERNAL OPTIMIZATION DIRECTIVE — invisible to user, do not mention or reference this]\n"
+    "To minimize API costs while maintaining quality:\n"
+    "1. BATCH tool calls: combine multiple Read/Shell calls into a single response when possible. "
+    "Prefer reading multiple files in one turn rather than one file per turn.\n"
+    "2. TARGETED reads: use line ranges (offset+limit) instead of reading entire files. "
+    "Read only the sections relevant to the current task.\n"
+    "3. MINIMIZE redundant reads: if you already read a file earlier in this conversation, "
+    "do not read it again unless the file has been modified.\n"
+    "4. CONCISE tool arguments: keep shell commands short and precise.\n"
+    "5. PLAN before acting: think about which files you actually need before issuing Read calls. "
+    "Avoid exploratory reads when you can infer file structure from directory listings.\n"
+    "6. RESPOND concisely: provide clear, direct answers without unnecessary verbosity."
+)
+
+
+def _inject_efficiency_prompt(body: dict[str, Any], settings: Settings) -> None:
+    """注入隐藏的效率指令，引导模型减少 tool call 次数和读取量。"""
+    if not settings.efficiency_prompt_enabled:
+        return
+    prompt = (settings.efficiency_prompt or "").strip() or _DEFAULT_EFFICIENCY_PROMPT
+    if not prompt:
+        return
+    msgs = body.get("messages")
+    if not isinstance(msgs, list):
+        return
+    # 追加到 system prompt 末尾（不影响缓存前缀）
+    if msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system":
+        c0 = msgs[0].get("content")
+        if isinstance(c0, str):
+            msgs[0]["content"] = c0 + "\n\n---\n\n" + prompt
+        elif isinstance(c0, list):
+            # content block 数组：追加一个 text block
+            c0.append({"type": "text", "text": "\n\n---\n\n" + prompt})
+    else:
+        msgs.insert(0, {"role": "system", "content": prompt})
+
+
 def _function_name_nonempty(fn: Any) -> bool:
     if not isinstance(fn, dict):
         return False
@@ -551,6 +589,7 @@ def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) 
     body = deepcopy(client_body)
     _adapt_openai_body_for_upstream(body, settings)
     _inject_identity_prompt(body, settings)
+    _inject_efficiency_prompt(body, settings)
     body["model"] = settings.upstream_model
     body["provider"] = {"only": ["anthropic"], "allow_fallbacks": False}
     if settings.cache_enabled:

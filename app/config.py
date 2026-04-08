@@ -37,6 +37,9 @@ class Settings(BaseSettings):
         "其中 Opus 4.6 是最先进、最智能的版本。"
     )
 
+    efficiency_prompt_enabled: bool = True
+    efficiency_prompt: str = ""
+
     https_proxy: str | None = None
 
     database_url: str | None = None
