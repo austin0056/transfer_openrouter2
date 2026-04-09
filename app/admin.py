@@ -77,7 +77,7 @@ _ADMIN_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>网关管理 · OpenRouter</title>
+  <title>网关管理</title>
   <style>
     :root {
       --bg: #0d1117;
@@ -134,12 +134,14 @@ _ADMIN_HTML = """<!DOCTYPE html>
     .field-desc {
       font-size: 0.8rem; color: var(--muted); line-height: 1.5; margin: 0 0 8px;
     }
-    input[type="text"], input[type="password"], input[type="number"], textarea {
+    input[type="text"], input[type="password"], input[type="number"], textarea, select {
       width: 100%; padding: 10px 12px; border-radius: 8px;
       border: 1px solid var(--border); background: var(--bg); color: var(--text);
-      font-size: 0.9rem;
+      font-size: 0.9rem; appearance: none; -webkit-appearance: none;
     }
-    input:focus, textarea:focus { outline: none; border-color: #388bfd; box-shadow: 0 0 0 3px rgba(56,139,253,0.15); }
+    select { cursor: pointer; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b949e' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 36px; }
+    select option { background: var(--surface); color: var(--text); }
+    input:focus, textarea:focus, select:focus { outline: none; border-color: #388bfd; box-shadow: 0 0 0 3px rgba(56,139,253,0.15); }
     textarea { min-height: 72px; font-family: ui-monospace, monospace; font-size: 0.82rem; resize: vertical; }
     .checks { display: flex; flex-direction: column; gap: 12px; }
     @media (min-width: 560px) { .checks { flex-direction: row; flex-wrap: wrap; } }
@@ -183,7 +185,7 @@ _ADMIN_HTML = """<!DOCTYPE html>
 <body>
   <header class="topbar">
     <h1>网关配置</h1>
-    <p class="sub">OpenRouter 兼容网关 · 保存至 CONFIG_FILE（与 ADMIN_KEY 分离）</p>
+    <p class="sub">API 网关管理面板 · 支持 OpenRouter / Anthropic 原生</p>
     <div class="toolbar admin-login">
       <div style="flex:1; min-width:200px; max-width:420px">
         <label for="adminKey">管理密钥（环境变量 ADMIN_KEY，仅用于登录本页）</label>
@@ -196,8 +198,7 @@ _ADMIN_HTML = """<!DOCTYPE html>
   </header>
 
   <p class="intro">
-    <strong>推荐流程：</strong>在 Zeabur 等平台只设置 <code>ADMIN_KEY</code>；本页填写 OpenRouter 密钥、对外 Gateway 密钥、代理与数据库等，保存后写入 <code>CONFIG_FILE</code>（默认 <code>data/config.json</code>，可用数据盘路径如 <code>/data/config.json</code>）。
-    <code>ADMIN_KEY</code> 不会写入配置文件。修改 <code>DATABASE_URL</code> 或嵌入相关项后<strong>建议重启服务</strong>以应用后台任务。
+    <strong>部署流程：</strong>平台只需设 <code>ADMIN_KEY</code> 环境变量 → 本页填写上游密钥和 Gateway 密钥 → 保存写入 <code>CONFIG_FILE</code>。<code>ADMIN_KEY</code> 不写入配置文件。修改数据库或嵌入配置后<strong>建议重启服务</strong>。
   </p>
 
   <div class="card card-highlight">
@@ -217,37 +218,31 @@ _ADMIN_HTML = """<!DOCTYPE html>
   <form id="cfg" onsubmit="return false;">
 
     <div class="card">
-      <h2>上游与模型</h2>
-      <p class="section-desc">网关代表客户端向 OpenRouter 发起请求时使用的密钥与模型标识。</p>
-
+      <h2>🔑 网关鉴权</h2>
+      <p class="section-desc">客户端（Cursor 等）访问本网关使用的密钥，与上游 API Key 独立。</p>
       <div class="field">
-        <div class="field-head"><span class="field-title">OpenRouter 上游 API 密钥</span><span class="field-key">openrouter_api_key</span></div>
-        <p class="field-desc">在 <a href="https://openrouter.ai/" target="_blank" rel="noopener" style="color:#58a6ff">openrouter.ai</a> 控制台创建。网关用此密钥调用上游 <code>chat/completions</code>，请妥善保管、勿提交到公开仓库。</p>
-        <input type="password" name="openrouter_api_key" autocomplete="off" placeholder="sk-or-v1-..."/>
-      </div>
-
-      <div class="field">
-        <div class="field-head"><span class="field-title">对外 Gateway 密钥（给 Cursor 用）</span><span class="field-key">gateway_api_key</span></div>
-        <p class="field-desc">客户端（如 Cursor）在 <code>Authorization: Bearer</code> 里填的密钥，<strong>与 OpenRouter Key 独立</strong>。可点<strong>随机生成</strong>；生成或保存后点<strong>复制密钥</strong>粘贴到 Cursor。若留空后点「保存全部」，也会<strong>自动生成</strong>并写入配置。</p>
+        <div class="field-head"><span class="field-title">Gateway 密钥</span><span class="field-key">gateway_api_key</span></div>
+        <p class="field-desc">填到 Cursor 的 <code>OpenAI API Key</code> 中。可点随机生成；保存时留空自动生成。</p>
         <div class="input-row">
-          <input type="password" name="gateway_api_key" id="gatewayApiKey" autocomplete="off" placeholder="点击随机生成，或保存时留空则自动生成"/>
+          <input type="password" name="gateway_api_key" id="gatewayApiKey" autocomplete="off" placeholder="点击随机生成"/>
           <div class="btn-row">
             <button type="button" class="btn-secondary" id="btnGenGateway">随机生成</button>
             <button type="button" class="btn-secondary" id="btnCopyGateway">复制密钥</button>
           </div>
         </div>
       </div>
-
       <div class="field" id="cursorSnippetField">
         <div class="field-head"><span class="field-title">Cursor 快速配置</span></div>
-        <p class="field-desc">将以下 JSON 片段粘贴到 Cursor 的 <code>Settings &gt; Models &gt; OpenAI API Key</code> 和 <code>Override OpenAI Base URL</code>，或直接复制到 <code>.cursor/settings.json</code>。</p>
         <pre id="cursorSnippet" style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:6px;font-size:13px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;cursor:pointer" title="点击复制">正在生成…</pre>
         <button type="button" class="btn-secondary" id="btnCopyCursorSnippet" style="margin-top:6px">复制 Cursor 配置</button>
       </div>
+    </div>
 
+    <div class="card card-highlight">
+      <h2>🔄 上游供应商</h2>
+      <p class="section-desc">选择上游 API 协议和密钥。两种供应商的配置互相独立，切换时无需重新填写。</p>
       <div class="field">
-        <div class="field-head"><span class="field-title">上游供应商协议</span><span class="field-key">upstream_provider</span></div>
-        <p class="field-desc">选择上游 API 协议。<strong>OpenRouter</strong> 走 OpenAI 兼容协议，<strong>Anthropic</strong> 走原生 Messages API 直连。</p>
+        <div class="field-head"><span class="field-title">供应商协议</span><span class="field-key">upstream_provider</span></div>
         <select name="upstream_provider" id="upstreamProvider">
           <option value="openrouter">OpenRouter (OpenAI 兼容)</option>
           <option value="anthropic">Anthropic 原生直连</option>
@@ -256,23 +251,23 @@ _ADMIN_HTML = """<!DOCTYPE html>
 
       <div id="openrouterFields">
         <div class="field">
-          <div class="field-head"><span class="field-title">上游模型 ID</span><span class="field-key">upstream_model</span></div>
-          <p class="field-desc">OpenRouter 模型 slug，例如 <code>anthropic/claude-opus-4.6</code>。</p>
+          <div class="field-head"><span class="field-title">OpenRouter API Key</span><span class="field-key">openrouter_api_key</span></div>
+          <input type="password" name="openrouter_api_key" autocomplete="off" placeholder="sk-or-v1-..."/>
+        </div>
+        <div class="field">
+          <div class="field-head"><span class="field-title">模型 ID</span><span class="field-key">upstream_model</span></div>
           <input type="text" name="upstream_model" placeholder="anthropic/claude-opus-4.6"/>
         </div>
         <div class="field">
-          <div class="field-head"><span class="field-title">上游 API 根地址</span><span class="field-key">upstream_base_url</span></div>
-          <p class="field-desc">一般为 <code>https://openrouter.ai/api/v1</code>。</p>
+          <div class="field-head"><span class="field-title">API 根地址</span><span class="field-key">upstream_base_url</span></div>
           <input type="text" name="upstream_base_url" placeholder="https://openrouter.ai/api/v1"/>
         </div>
         <div class="field">
-          <div class="field-head"><span class="field-title">OpenRouter HTTP-Referer（可选）</span><span class="field-key">openrouter_http_referer</span></div>
-          <p class="field-desc">OpenRouter 统计用 URL，例如公开仓库链接。</p>
+          <div class="field-head"><span class="field-title">HTTP-Referer（可选）</span><span class="field-key">openrouter_http_referer</span></div>
           <input type="text" name="openrouter_http_referer" placeholder="https://github.com/you/repo"/>
         </div>
         <div class="field">
-          <div class="field-head"><span class="field-title">OpenRouter X-Title（可选）</span><span class="field-key">openrouter_app_title</span></div>
-          <p class="field-desc">在 OpenRouter 侧展示的应用标题。</p>
+          <div class="field-head"><span class="field-title">X-Title（可选）</span><span class="field-key">openrouter_app_title</span></div>
           <input type="text" name="openrouter_app_title" placeholder="OpenRouter Gateway"/>
         </div>
       </div>
@@ -280,53 +275,57 @@ _ADMIN_HTML = """<!DOCTYPE html>
       <div id="anthropicFields" style="display:none">
         <div class="field">
           <div class="field-head"><span class="field-title">Anthropic API Key</span><span class="field-key">anthropic_api_key</span></div>
-          <p class="field-desc">Anthropic 原生 API 密钥（sk-ant-...）。</p>
           <input type="password" name="anthropic_api_key" autocomplete="off" placeholder="sk-ant-api03-..."/>
         </div>
         <div class="field">
-          <div class="field-head"><span class="field-title">Anthropic 模型 ID</span><span class="field-key">anthropic_model</span></div>
-          <p class="field-desc">原生模型 ID，例如 <code>claude-opus-4-20250514</code>。</p>
+          <div class="field-head"><span class="field-title">模型 ID</span><span class="field-key">anthropic_model</span></div>
           <input type="text" name="anthropic_model" placeholder="claude-opus-4-20250514"/>
         </div>
         <div class="field">
-          <div class="field-head"><span class="field-title">Anthropic Base URL</span><span class="field-key">anthropic_base_url</span></div>
-          <p class="field-desc">默认 <code>https://api.anthropic.com</code>。使用反代时修改。</p>
+          <div class="field-head"><span class="field-title">Base URL</span><span class="field-key">anthropic_base_url</span></div>
           <input type="text" name="anthropic_base_url" placeholder="https://api.anthropic.com"/>
         </div>
         <div class="field">
-          <div class="field-head"><span class="field-title">Anthropic API Version</span><span class="field-key">anthropic_version</span></div>
-          <p class="field-desc">一般不需要修改。</p>
+          <div class="field-head"><span class="field-title">API Version</span><span class="field-key">anthropic_version</span></div>
           <input type="text" name="anthropic_version" placeholder="2023-06-01"/>
         </div>
       </div>
+    </div>
 
+    <div class="card">
+      <h2>⚙️ 行为控制</h2>
+      <p class="section-desc">请求转换、日志和提示词注入等行为开关。</p>
       <div class="checks">
         <div class="check-item">
           <label><input type="checkbox" name="loose_tools_passthrough"/>
             <span><span class="t">宽松工具透传</span><span class="field-key" style="display:inline;margin-left:6px">loose_tools_passthrough</span>
-            <span class="d">开启后保留非 <code>function</code> 标准形态的 <code>tools</code> 项；关闭时仅保留带合法 <code>function.name</code> 的项。</span></span>
+            <span class="d">保留非标准 tools 项。上游报错时可关闭排查。</span></span>
           </label>
         </div>
         <div class="check-item">
           <label><input type="checkbox" name="log_chat_metadata"/>
-            <span><span class="t">记录对话元数据日志</span><span class="field-key" style="display:inline;margin-left:6px">log_chat_metadata</span>
-            <span class="d">每条 chat 一行 INFO：流式与否、tools 数量、请求/响应 model，<strong>不包含</strong>消息正文。</span></span>
+            <span><span class="t">记录对话元数据</span><span class="field-key" style="display:inline;margin-left:6px">log_chat_metadata</span>
+            <span class="d">每条 chat 一行 INFO，不含消息正文。</span></span>
           </label>
         </div>
       </div>
-
-      <div class="checks">
+      <div class="checks" style="margin-top:12px">
         <div class="check-item">
           <label><input type="checkbox" name="identity_prompt_enabled"/>
-            <span><span class="t">注入身份说明（system）</span><span class="field-key" style="display:inline;margin-left:6px">identity_prompt_enabled</span>
-            <span class="d">开启后，每次对话会在消息前合并一条 system，便于用户问「你是什么模型」时按下方文案回答（减少误称 Sonnet）。</span></span>
+            <span><span class="t">注入身份说明</span><span class="field-key" style="display:inline;margin-left:6px">identity_prompt_enabled</span>
+            <span class="d">回答「你是什么模型」时使用下方文案。</span></span>
+          </label>
+        </div>
+        <div class="check-item">
+          <label><input type="checkbox" name="efficiency_prompt_enabled" checked/>
+            <span><span class="t">注入效率指令</span><span class="field-key" style="display:inline;margin-left:6px">efficiency_prompt_enabled</span>
+            <span class="d">引导模型批量读取、减少 tool call，降低 token 消耗。</span></span>
           </label>
         </div>
       </div>
-      <div class="field">
+      <div class="field" style="margin-top:14px">
         <div class="field-head"><span class="field-title">身份说明正文</span><span class="field-key">identity_prompt</span></div>
-        <p class="field-desc">仅当上一项勾选时生效；会包在一小段「仅在问身份时作答」的指令后发给上游。</p>
-        <textarea name="identity_prompt" rows="4" placeholder="我是 Claude Opus 4.6…"></textarea>
+        <textarea name="identity_prompt" rows="3" placeholder="我是 Claude Opus 4.6…"></textarea>
       </div>
     </div>
 
@@ -559,7 +558,7 @@ _ADMIN_HTML = """<!DOCTYPE html>
         } else if (el.type === "number") {
           const t = el.value.trim();
           if (t === "") continue;
-          out[el.name] = el.value.includes(".") ? parseFloat(el) : parseInt(el, 10);
+          out[el.name] = t.includes(".") ? parseFloat(t) : parseInt(t, 10);
         } else {
           const t = el.value.trim();
           if (t === "") continue;
