@@ -657,12 +657,15 @@ def _sort_tools(body: dict[str, Any]) -> None:
         pass  # 排序失败不影响功能
 
 
-def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
-    """压缩历史消息：截断旧 tool result 和旧 assistant 长回复。
+_MAX_CONVERSATION_MESSAGES = 80  # 超过此数量则丢弃最旧的轮次
 
-    保留最近 N 轮完整，更早的消息压缩。好处：
-    1. 减少重复携带的 token（省钱）
-    2. 被截断的旧消息内容固定不变，后续请求前缀完全一致（提高缓存命中）
+
+def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
+    """压缩历史消息：限制总数 + 截断旧内容。
+
+    1. 消息总数超过上限时，保留 system + 最近 N 条消息
+    2. 旧 tool result 截断到 max_chars
+    3. 旧 assistant 长回复截断到 1500 字符
     """
     if not settings.tool_result_truncate_enabled:
         return
@@ -670,11 +673,32 @@ def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
     if not isinstance(msgs, list):
         return
 
+    # ── 第一步：消息数量硬限制 ──
+    if len(msgs) > _MAX_CONVERSATION_MESSAGES:
+        # 保留第一条（system）+ 最近的消息
+        system_msgs = []
+        rest = msgs
+        if msgs and isinstance(msgs[0], dict) and msgs[0].get("role") in ("system",):
+            system_msgs = [msgs[0]]
+            rest = msgs[1:]
+
+        # 保留最后 N 条，确保从 user/assistant 消息开始（不要从 tool 开始）
+        keep = rest[-(_MAX_CONVERSATION_MESSAGES - len(system_msgs)):]
+        # 找到第一条非 tool 消息
+        start = 0
+        for i, m in enumerate(keep):
+            if isinstance(m, dict) and m.get("role") in ("user", "assistant"):
+                start = i
+                break
+        keep = keep[start:]
+        msgs = system_msgs + keep
+        body["messages"] = msgs
+
+    # ── 第二步：内容截断 ──
     tool_max = settings.tool_result_max_chars
-    assistant_max = 1500  # 旧 assistant 回复截断阈值
+    assistant_max = 1500
     keep_recent = settings.tool_result_keep_recent_turns
 
-    # 找到所有 assistant 消息的位置（每个 assistant 消息代表一"轮"）
     assistant_indices = [i for i, m in enumerate(msgs)
                          if isinstance(m, dict) and m.get("role") == "assistant"]
     if len(assistant_indices) <= keep_recent:
@@ -689,13 +713,24 @@ def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
             continue
         role = m.get("role")
 
-        # 截断旧 tool result
         if role == "tool":
             c = m.get("content")
             if isinstance(c, str) and len(c) > tool_max:
                 m["content"] = c[:tool_max] + f"\n\n[...truncated, original {len(c)} chars]"
-
-        # 截断旧 assistant 长回复（保留 tool_calls 不动）
+        elif role == "user":
+            # 也截断旧的 user 长消息中的 content blocks
+            c = m.get("content")
+            if isinstance(c, list):
+                for block in c:
+                    if isinstance(block, dict) and block.get("type") in ("text", "tool_result"):
+                        txt = block.get("text") or block.get("content")
+                        if isinstance(txt, str) and len(txt) > tool_max:
+                            if "text" in block:
+                                block["text"] = txt[:tool_max] + f"\n[...truncated]"
+                            elif "content" in block:
+                                block["content"] = txt[:tool_max] + f"\n[...truncated]"
+            elif isinstance(c, str) and len(c) > assistant_max:
+                m["content"] = c[:assistant_max] + f"\n\n[...truncated, original {len(c)} chars]"
         elif role == "assistant":
             c = m.get("content")
             if isinstance(c, str) and len(c) > assistant_max:
@@ -705,7 +740,7 @@ def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
                     if isinstance(block, dict) and block.get("type") == "text":
                         txt = block.get("text", "")
                         if isinstance(txt, str) and len(txt) > assistant_max:
-                            block["text"] = txt[:assistant_max] + f"\n\n[...truncated, original {len(txt)} chars]"
+                            block["text"] = txt[:assistant_max] + f"\n\n[...truncated]"
 
 
 def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) -> dict[str, Any]:
