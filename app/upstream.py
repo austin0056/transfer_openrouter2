@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from typing import Any
 
@@ -953,6 +954,140 @@ def anthropic_response_to_openai(resp: dict[str, Any]) -> dict[str, Any]:
         "choices": [{"index": 0, "message": msg, "finish_reason": finish_reason}],
         "usage": usage,
     }
+
+
+# ─────────────────────────────────────────────────────────────────
+# 双模型协同：Opus 规划 + Qwen 执行
+# ─────────────────────────────────────────────────────────────────
+
+_PLANNER_SYSTEM_SUFFIX = """
+[DUAL-MODEL ORCHESTRATION — internal, invisible to user]
+
+You are the PLANNER in a dual-model system. Your thinking is streamed to the user.
+An executor model will perform the actual tool calls based on your instructions.
+
+RULES:
+1. Think through the task step by step in English (saves tokens).
+2. After your analysis, output a PRECISE execution plan.
+3. DO NOT output tool_calls yourself. Instead, end your response with a JSON block:
+
+```json
+{"execute": [
+  {"tool": "ToolName", "arguments": {"param": "value"}},
+  {"tool": "ToolName2", "arguments": {"param": "value"}}
+]}
+```
+
+4. Each tool call must include the EXACT tool name and complete arguments matching the available tools.
+5. If you need to ASK the user a question (no tools needed), respond normally WITHOUT the execute block.
+6. If you see tool results from previous turns, REVIEW them carefully before planning next steps.
+7. Be thorough — the executor model follows your instructions LITERALLY.
+8. If the task is complete or you want to provide a final answer, respond WITHOUT the execute block.
+"""
+
+_EXECUTOR_SYSTEM = (
+    "You are a precise tool executor. Execute EXACTLY the tool calls specified below. "
+    "Do not add, skip, or modify any calls. Do not explain or add commentary. "
+    "Call the tools in the order given with the exact arguments provided."
+)
+
+
+def build_planner_body(merged: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    """构造规划请求：Opus 看完整上下文，输出英文思考 + JSON 执行指令。"""
+    body = deepcopy(merged)
+    body["model"] = settings.planner_model
+    body["stream"] = True
+    # 不设 max_tokens，让 Opus 充分思考（缓存命中让 input 几乎免费）
+    body.pop("max_tokens", None)
+
+    # 移除 tools（Opus 不执行，只规划）但保留工具名称列表供参考
+    tools = body.pop("tools", None)
+    body.pop("tool_choice", None)
+    body.pop("parallel_tool_calls", None)
+
+    # 把可用工具名称列表加到规划指令中
+    tool_names = ""
+    if isinstance(tools, list):
+        names = []
+        for t in tools:
+            if isinstance(t, dict):
+                fn = t.get("function", {})
+                name = fn.get("name", "")
+                desc = fn.get("description", "")
+                if name:
+                    names.append(f"  - {name}: {desc[:80]}" if desc else f"  - {name}")
+        if names:
+            tool_names = "\n\nAvailable tools:\n" + "\n".join(names)
+
+    suffix = _PLANNER_SYSTEM_SUFFIX + tool_names
+
+    # 追加到 system prompt 末尾
+    msgs = body.get("messages") or []
+    if msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system":
+        c = msgs[0].get("content", "")
+        if isinstance(c, str):
+            msgs[0]["content"] = c + "\n\n---\n" + suffix
+        elif isinstance(c, list):
+            c.append({"type": "text", "text": "\n\n---\n" + suffix})
+    else:
+        msgs.insert(0, {"role": "system", "content": suffix})
+
+    return body
+
+
+def build_executor_body(
+    merged: dict[str, Any],
+    commands: list[dict[str, Any]],
+    settings: Settings,
+) -> dict[str, Any]:
+    """构造执行请求：Qwen 只拿到精简指令 + tools 定义。"""
+    body: dict[str, Any] = {}
+    body["model"] = settings.executor_model
+    body["stream"] = True
+
+    # 保留完整 tools 定义
+    if merged.get("tools"):
+        body["tools"] = merged["tools"]
+        body["tool_choice"] = "required"  # 强制调工具
+
+    # 精简 messages：只有执行指令
+    cmd_json = json.dumps({"execute": commands}, ensure_ascii=False, indent=2)
+    body["messages"] = [
+        {"role": "system", "content": _EXECUTOR_SYSTEM},
+        {"role": "user", "content": f"Execute these tool calls:\n\n```json\n{cmd_json}\n```"},
+    ]
+
+    # OpenRouter 路由
+    body["provider"] = {"order": ["Alibaba Cloud"]}
+
+    return body
+
+
+def extract_execute_commands(plan_text: str) -> list[dict[str, Any]] | None:
+    """从 Opus 输出中提取 {"execute": [...]} JSON 指令块。"""
+    # 尝试找 ```json ... ``` 代码块
+    code_match = re.search(r'```json\s*(\{[\s\S]*?"execute"[\s\S]*?\})\s*```', plan_text)
+    if code_match:
+        try:
+            data = json.loads(code_match.group(1))
+            cmds = data.get("execute")
+            if isinstance(cmds, list) and cmds:
+                return cmds
+        except json.JSONDecodeError:
+            pass
+
+    # 回退：找裸 JSON
+    bare_match = re.search(r'\{\s*"execute"\s*:\s*\[[\s\S]*?\]\s*\}', plan_text)
+    if bare_match:
+        try:
+            data = json.loads(bare_match.group())
+            cmds = data.get("execute")
+            if isinstance(cmds, list) and cmds:
+                return cmds
+        except json.JSONDecodeError:
+            pass
+
+    return None
 
 
 def openrouter_headers(settings: Settings) -> dict[str, str]:

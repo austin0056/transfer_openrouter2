@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     )
 
     efficiency_prompt_enabled: bool = True
+
+    # 双模型协同：Opus 规划 + Qwen 执行
+    dual_model_enabled: bool = False
+    planner_model: str = "anthropic/claude-opus-4.6"
+    executor_model: str = "qwen/qwen3.6-plus"
     efficiency_prompt: str = ""
 
     # 历史 tool result 截断：保留最近 N 轮完整，更早的截断到 max_chars

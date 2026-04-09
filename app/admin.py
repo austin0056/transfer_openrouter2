@@ -330,7 +330,28 @@ _ADMIN_HTML = """<!DOCTYPE html>
     </div>
 
     <div class="card">
-      <h2>网络代理</h2>
+      <h2>🧠 双模型协同</h2>
+      <p class="section-desc">Opus 做规划思考（缓存命中 + 英文输出），Qwen 做 tool_calls 执行（便宜大量输出）。节省 ~50% 成本。仅对有 tools 的流式请求生效。</p>
+      <div class="checks">
+        <div class="check-item">
+          <label><input type="checkbox" name="dual_model_enabled"/>
+            <span><span class="t">启用双模型协同</span><span class="field-key" style="display:inline;margin-left:6px">dual_model_enabled</span>
+            <span class="d">开启后 Opus 规划 + Qwen 执行；关闭则全程使用上游模型。</span></span>
+          </label>
+        </div>
+      </div>
+      <div class="field" style="margin-top:14px">
+        <div class="field-head"><span class="field-title">规划模型</span><span class="field-key">planner_model</span></div>
+        <input type="text" name="planner_model" placeholder="anthropic/claude-opus-4.6"/>
+      </div>
+      <div class="field">
+        <div class="field-head"><span class="field-title">执行模型</span><span class="field-key">executor_model</span></div>
+        <input type="text" name="executor_model" placeholder="qwen/qwen3.6-plus"/>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>🌐 网络代理</h2>
       <p class="section-desc">出站访问 OpenRouter 时使用的 HTTP/SOCKS 代理（如住宅 SOCKS5）。保存后会自动重建 HTTP 客户端。</p>
       <div class="field">
         <div class="field-head"><span class="field-title">HTTPS / SOCKS 代理 URL</span><span class="field-key">https_proxy</span></div>

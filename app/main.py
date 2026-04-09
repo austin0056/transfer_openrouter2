@@ -32,6 +32,9 @@ from app.sse_stream import (
 from app.storage import EmbedJob, PersistJob, create_pool, persistence_schema_ready, persist_worker
 from app.upstream import (
     anthropic_response_to_openai,
+    build_executor_body,
+    build_planner_body,
+    extract_execute_commands,
     get_upstream_headers,
     get_upstream_url,
     merge_chat_completion_body,
@@ -328,6 +331,12 @@ async def chat_completions(
     t0 = time.perf_counter()
 
     if stream:
+        # 双模型协同：Opus 规划 + Qwen 执行
+        if settings.dual_model_enabled and merged.get("tools") and not is_anthropic:
+            return await _dual_model_stream(
+                request, client, url, headers, merged,
+                session_external, t0, settings,
+            )
         return await _stream_chat(
             request,
             client,
@@ -473,6 +482,164 @@ async def embeddings_proxy(
     if payload is None:
         payload = {"error": {"message": r.text, "type": "upstream_error", "code": r.status_code}}
     return JSONResponse(content=payload, status_code=r.status_code)
+
+
+async def _dual_model_stream(
+    request: Request,
+    client: httpx.AsyncClient,
+    url: str,
+    headers: dict[str, str],
+    merged: dict[str, Any],
+    session_external: str,
+    t0: float,
+    settings: Settings,
+) -> StreamingResponse:
+    """双模型串联：Opus 流式思考 → Qwen 流式执行 tool_calls。"""
+
+    async def gen():
+        chunk_id = f"chatcmpl-{uuid4().hex[:24]}"
+        plan_parts: list[str] = []
+        disconnected = False
+        err: str | None = None
+
+        # ═══ 阶段 1: Opus 规划 ═══
+        planner_body = build_planner_body(merged, settings)
+        if settings.log_chat_metadata:
+            logger.info(
+                "dual_planner session=%s model=%s",
+                session_external, settings.planner_model,
+            )
+
+        try:
+            async with client.stream("POST", url, headers=headers, json=planner_body) as r:
+                if r.status_code >= 400:
+                    err_body = await r.aread()
+                    err = err_body.decode("utf-8", errors="replace")
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {"error": {"message": err, "type": "upstream_error"}},
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+                    yield "data: [DONE]\n\n"
+                    return
+
+                async for line in r.aiter_lines():
+                    if await request.is_disconnected():
+                        disconnected = True
+                        break
+                    parsed = parse_sse_line(line)
+                    if not parsed:
+                        continue
+                    if parsed.get("__done__"):
+                        break
+                    # 提取文字并累积
+                    choices = parsed.get("choices") or []
+                    for ch in choices:
+                        delta = ch.get("delta") or {}
+                        text = delta.get("content")
+                        if isinstance(text, str) and text:
+                            plan_parts.append(text)
+                    # 重写 chunk id 后输出思考过程
+                    parsed["id"] = chunk_id
+                    yield f"data: {json.dumps(parsed, ensure_ascii=False)}\n\n"
+        except httpx.RequestError as e:
+            err = str(e)
+            yield (
+                "data: "
+                + json.dumps(
+                    {"error": {"message": err, "type": "proxy_error"}},
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+            disconnected = True
+
+        if disconnected:
+            yield "data: [DONE]\n\n"
+            return
+
+        plan_text = "".join(plan_parts)
+        commands = extract_execute_commands(plan_text)
+
+        if settings.log_chat_metadata:
+            logger.info(
+                "dual_plan session=%s plan_len=%d commands=%s",
+                session_external, len(plan_text),
+                len(commands) if commands else "none",
+            )
+
+        if not commands:
+            # Opus 没输出执行指令 → 纯文字回复，正常结束
+            finish_chunk = {
+                "id": chunk_id,
+                "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+            yield f"data: {json.dumps(finish_chunk, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        # ═══ 阶段 2: Qwen 执行 ═══
+        executor_body = build_executor_body(merged, commands, settings)
+        if settings.log_chat_metadata:
+            logger.info(
+                "dual_executor session=%s model=%s tools=%d commands=%d",
+                session_external, settings.executor_model,
+                len(executor_body.get("tools") or []), len(commands),
+            )
+
+        try:
+            async with client.stream("POST", url, headers=headers, json=executor_body) as r:
+                if r.status_code >= 400:
+                    err_body = await r.aread()
+                    err = err_body.decode("utf-8", errors="replace")
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {"error": {"message": err, "type": "upstream_error"}},
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+                    yield "data: [DONE]\n\n"
+                    return
+
+                async for line in r.aiter_lines():
+                    if await request.is_disconnected():
+                        break
+                    parsed = parse_sse_line(line)
+                    if not parsed:
+                        continue
+                    if parsed.get("__done__"):
+                        break
+                    # 重写 chunk id，只透传 tool_calls 相关 chunks
+                    parsed["id"] = chunk_id
+                    yield f"data: {json.dumps(parsed, ensure_ascii=False)}\n\n"
+        except httpx.RequestError as e:
+            yield (
+                "data: "
+                + json.dumps(
+                    {"error": {"message": str(e), "type": "proxy_error"}},
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "X-Session-Id": session_external,
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 async def _stream_chat(
