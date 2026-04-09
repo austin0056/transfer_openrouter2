@@ -48,6 +48,7 @@ class Settings(BaseSettings):
 
     # 双模型协同：Opus 规划 + Qwen 执行
     dual_model_enabled: bool = False
+    dual_model_name: str = "opus-qwen-hybrid"
     planner_model: str = "anthropic/claude-opus-4.6"
     executor_model: str = "qwen/qwen3.6-plus"
     efficiency_prompt: str = ""

@@ -341,6 +341,11 @@ _ADMIN_HTML = """<!DOCTYPE html>
         </div>
       </div>
       <div class="field" style="margin-top:14px">
+        <div class="field-head"><span class="field-title">对外模型名称</span><span class="field-key">dual_model_name</span></div>
+        <p class="field-desc">分发层按此名称路由请求。会出现在 <code>/v1/models</code> 列表中。</p>
+        <input type="text" name="dual_model_name" placeholder="opus-qwen-hybrid"/>
+      </div>
+      <div class="field">
         <div class="field-head"><span class="field-title">规划模型</span><span class="field-key">planner_model</span></div>
         <input type="text" name="planner_model" placeholder="anthropic/claude-opus-4.6"/>
       </div>

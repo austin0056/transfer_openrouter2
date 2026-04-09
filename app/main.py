@@ -174,25 +174,38 @@ async def list_models(
     _: None = Depends(verify_gateway_key),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
+    models: list[dict[str, Any]] = []
+    # 主模型
     mid = settings.upstream_model
+    if settings.upstream_provider == "anthropic":
+        mid = settings.anthropic_model
+    models.append({
+        "id": mid,
+        "object": "model",
+        "created": 0,
+        "owned_by": "anthropic",
+        "permission": [],
+        "root": mid,
+        "parent": None,
+        "context_length": 200000,
+        "capabilities": {"vision": True, "function_calling": True},
+    })
+    # 双模型混合
+    if settings.dual_model_enabled and settings.dual_model_name:
+        models.append({
+            "id": settings.dual_model_name,
+            "object": "model",
+            "created": 0,
+            "owned_by": "gateway",
+            "permission": [],
+            "root": settings.dual_model_name,
+            "parent": None,
+            "context_length": 200000,
+            "capabilities": {"vision": True, "function_calling": True},
+        })
     return {
         "object": "list",
-        "data": [
-            {
-                "id": mid,
-                "object": "model",
-                "created": 0,
-                "owned_by": "anthropic",
-                "permission": [],
-                "root": mid,
-                "parent": None,
-                "context_length": 200000,
-                "capabilities": {
-                    "vision": True,
-                    "function_calling": True,
-                },
-            }
-        ],
+        "data": models,
     }
 
 
