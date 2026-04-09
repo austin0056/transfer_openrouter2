@@ -246,15 +246,48 @@ _ADMIN_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="field">
-        <div class="field-head"><span class="field-title">上游模型 ID</span><span class="field-key">upstream_model</span></div>
-        <p class="field-desc">OpenRouter 模型 slug，例如 <code>anthropic/claude-opus-4.6</code>。网关会固定合并 <code>provider.only: [&quot;anthropic&quot;]</code>，仅走 Anthropic 官方通道。</p>
-        <input type="text" name="upstream_model" placeholder="anthropic/claude-opus-4.6"/>
+        <div class="field-head"><span class="field-title">上游供应商协议</span><span class="field-key">upstream_provider</span></div>
+        <p class="field-desc">选择上游 API 协议。<strong>OpenRouter</strong> 走 OpenAI 兼容协议，<strong>Anthropic</strong> 走原生 Messages API 直连。</p>
+        <select name="upstream_provider" id="upstreamProvider">
+          <option value="openrouter">OpenRouter (OpenAI 兼容)</option>
+          <option value="anthropic">Anthropic 原生直连</option>
+        </select>
       </div>
 
-      <div class="field">
-        <div class="field-head"><span class="field-title">上游 API 根地址</span><span class="field-key">upstream_base_url</span></div>
-        <p class="field-desc">一般为官方 <code>https://openrouter.ai/api/v1</code>。仅当你使用自建反代或兼容端点时才修改。</p>
-        <input type="text" name="upstream_base_url" placeholder="https://openrouter.ai/api/v1"/>
+      <div id="openrouterFields">
+        <div class="field">
+          <div class="field-head"><span class="field-title">上游模型 ID</span><span class="field-key">upstream_model</span></div>
+          <p class="field-desc">OpenRouter 模型 slug，例如 <code>anthropic/claude-opus-4.6</code>。</p>
+          <input type="text" name="upstream_model" placeholder="anthropic/claude-opus-4.6"/>
+        </div>
+        <div class="field">
+          <div class="field-head"><span class="field-title">上游 API 根地址</span><span class="field-key">upstream_base_url</span></div>
+          <p class="field-desc">一般为 <code>https://openrouter.ai/api/v1</code>。</p>
+          <input type="text" name="upstream_base_url" placeholder="https://openrouter.ai/api/v1"/>
+        </div>
+      </div>
+
+      <div id="anthropicFields" style="display:none">
+        <div class="field">
+          <div class="field-head"><span class="field-title">Anthropic API Key</span><span class="field-key">anthropic_api_key</span></div>
+          <p class="field-desc">Anthropic 原生 API 密钥（sk-ant-...）。</p>
+          <input type="password" name="anthropic_api_key" autocomplete="off" placeholder="sk-ant-api03-..."/>
+        </div>
+        <div class="field">
+          <div class="field-head"><span class="field-title">Anthropic 模型 ID</span><span class="field-key">anthropic_model</span></div>
+          <p class="field-desc">原生模型 ID，例如 <code>claude-opus-4-20250514</code>。</p>
+          <input type="text" name="anthropic_model" placeholder="claude-opus-4-20250514"/>
+        </div>
+        <div class="field">
+          <div class="field-head"><span class="field-title">Anthropic Base URL</span><span class="field-key">anthropic_base_url</span></div>
+          <p class="field-desc">默认 <code>https://api.anthropic.com</code>。使用反代时修改。</p>
+          <input type="text" name="anthropic_base_url" placeholder="https://api.anthropic.com"/>
+        </div>
+        <div class="field">
+          <div class="field-head"><span class="field-title">Anthropic API Version</span><span class="field-key">anthropic_version</span></div>
+          <p class="field-desc">一般不需要修改。</p>
+          <input type="text" name="anthropic_version" placeholder="2023-06-01"/>
+        </div>
       </div>
 
       <div class="field">
@@ -483,6 +516,14 @@ _ADMIN_HTML = """<!DOCTYPE html>
     }
     setTimeout(updateCursorSnippet, 500);
 
+    function toggleProviderFields() {
+      const v = $("#upstreamProvider").value;
+      document.getElementById("openrouterFields").style.display = v === "openrouter" ? "" : "none";
+      document.getElementById("anthropicFields").style.display = v === "anthropic" ? "" : "none";
+    }
+    $("#upstreamProvider").addEventListener("change", toggleProviderFields);
+    setTimeout(toggleProviderFields, 100);
+
     $("#btnCopyCursorSnippet").onclick = () => {
       const t = $("#cursorSnippet").textContent;
       copyText(t, "已复制 Cursor 配置信息");
@@ -559,6 +600,7 @@ _ADMIN_HTML = """<!DOCTYPE html>
         if (!r.ok) throw new Error(j.detail || r.statusText || "加载失败");
         fillForm(j.settings || {});
         updateCursorSnippet();
+        toggleProviderFields();
         setMsg("已加载。路径: " + (j.config_path || ""), "ok");
       } catch (e) {
         setMsg(String(e.message || e), "err");

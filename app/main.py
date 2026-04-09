@@ -20,15 +20,23 @@ from app.deps import verify_gateway_key
 from app.embeddings import embed_worker
 from app.http_client import build_http_client
 from app.sse_stream import (
+    AnthropicStreamState,
     accumulate_delta,
     accumulate_tool_calls,
+    anthropic_event_to_openai_chunk,
     extract_usage,
     finish_reason_from_chunk,
     parse_sse_line,
     tool_calls_list,
 )
 from app.storage import EmbedJob, PersistJob, create_pool, persistence_schema_ready, persist_worker
-from app.upstream import merge_chat_completion_body, openrouter_headers
+from app.upstream import (
+    anthropic_response_to_openai,
+    get_upstream_headers,
+    get_upstream_url,
+    merge_chat_completion_body,
+    openrouter_headers,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -267,9 +275,10 @@ async def chat_completions(
         logger.info("chat_raw_messages session=%s raw=[%s]", session_external, " ".join(raw_summary))
 
     merged = merge_chat_completion_body(body, settings)
-    url = f"{settings.upstream_base_url.rstrip('/')}/chat/completions"
-    headers = openrouter_headers(settings)
+    url = get_upstream_url(settings)
+    headers = get_upstream_headers(settings)
     client: httpx.AsyncClient = request.app.state.http_client
+    is_anthropic = settings.upstream_provider == "anthropic"
 
     # 调试日志：记录发给上游的最终 messages 结构（含 content 详情）
     if settings.log_chat_metadata:
@@ -328,6 +337,7 @@ async def chat_completions(
             session_external,
             t0,
             settings,
+            is_anthropic=is_anthropic,
         )
 
     try:
@@ -363,6 +373,10 @@ async def chat_completions(
         payload = r.json()
     except Exception:
         payload = None
+
+    # Anthropic 非流式响应 → 转为 OpenAI 格式
+    if is_anthropic and r.is_success and isinstance(payload, dict) and payload.get("type") == "message":
+        payload = anthropic_response_to_openai(payload)
 
     usage = None
     resp_model: str | None = None
@@ -470,6 +484,8 @@ async def _stream_chat(
     session_external: str,
     t0: float,
     settings: Settings,
+    *,
+    is_anthropic: bool = False,
 ) -> StreamingResponse:
     parts: list[str] = []
     last_usage: dict[str, Any] | None = None
@@ -499,28 +515,65 @@ async def _stream_chat(
                     return
                 upstream_ok = True
                 got_done = False
-                async for line in r.aiter_lines():
-                    if await request.is_disconnected():
-                        break
-                    yield line + "\n\n"
-                    parsed = parse_sse_line(line)
-                    if not parsed:
-                        continue
-                    if parsed.get("__done__"):
-                        got_done = True
-                        continue
-                    if isinstance(parsed, dict):
-                        m = parsed.get("model")
-                        if isinstance(m, str) and m:
-                            stream_resp_model = m
-                    accumulate_delta(parsed, parts)
-                    accumulate_tool_calls(parsed, tool_bucket)
-                    fr = finish_reason_from_chunk(parsed)
-                    if fr:
-                        last_finish = fr
-                    u = extract_usage(parsed)
-                    if u is not None:
-                        last_usage = u
+
+                if is_anthropic:
+                    # Anthropic SSE → 实时转为 OpenAI SSE chunk
+                    anth_state = AnthropicStreamState()
+                    event_type = ""
+                    async for line in r.aiter_lines():
+                        if await request.is_disconnected():
+                            break
+                        line_s = line.strip()
+                        if line_s.startswith("event:"):
+                            event_type = line_s[6:].strip()
+                            continue
+                        if not line_s.startswith("data:"):
+                            continue
+                        data_str = line_s[5:].strip()
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+                        chunk_str = anthropic_event_to_openai_chunk(event_type, data, anth_state)
+                        if chunk_str:
+                            yield chunk_str
+                            if chunk_str.strip() == "data: [DONE]":
+                                got_done = True
+                        # 同步内部状态
+                        if anth_state.model:
+                            stream_resp_model = anth_state.model
+                        parts.clear()
+                        parts.extend(anth_state.text_parts)
+                        tool_bucket.update(anth_state.tool_bucket)
+                        if anth_state.finish_reason:
+                            last_finish = anth_state.finish_reason
+                        if anth_state.usage:
+                            last_usage = anth_state.usage
+                        event_type = ""
+                else:
+                    # OpenRouter/OpenAI SSE 透传
+                    async for line in r.aiter_lines():
+                        if await request.is_disconnected():
+                            break
+                        yield line + "\n\n"
+                        parsed = parse_sse_line(line)
+                        if not parsed:
+                            continue
+                        if parsed.get("__done__"):
+                            got_done = True
+                            continue
+                        if isinstance(parsed, dict):
+                            m = parsed.get("model")
+                            if isinstance(m, str) and m:
+                                stream_resp_model = m
+                        accumulate_delta(parsed, parts)
+                        accumulate_tool_calls(parsed, tool_bucket)
+                        fr = finish_reason_from_chunk(parsed)
+                        if fr:
+                            last_finish = fr
+                        u = extract_usage(parsed)
+                        if u is not None:
+                            last_usage = u
         except httpx.RequestError as e:
             err = str(e)
             yield (

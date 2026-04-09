@@ -708,13 +708,22 @@ def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
 
 
 def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) -> dict[str, Any]:
-    """Preserve tools/tool_choice/parallel_tool_calls etc.; only override model + Anthropic routing."""
+    """根据 upstream_provider 构建请求体。"""
     body = deepcopy(client_body)
     _adapt_openai_body_for_upstream(body, settings)
     _inject_identity_prompt(body, settings)
     _inject_efficiency_prompt(body, settings)
     _sort_tools(body)
     _compress_old_messages(body, settings)
+
+    if settings.upstream_provider == "anthropic":
+        return _build_anthropic_body(body, settings)
+    else:
+        return _build_openrouter_body(body, settings)
+
+
+def _build_openrouter_body(body: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    """OpenRouter 路径（现有逻辑）。"""
     body["model"] = settings.upstream_model
     body["provider"] = {"only": ["anthropic"], "allow_fallbacks": False}
     if settings.cache_enabled:
@@ -726,6 +735,224 @@ def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) 
         body.pop("cache_control", None)
     _inject_cache_breakpoints(body, settings)
     return body
+
+
+# ─────────────────────────────────────────────────────────────────
+# Anthropic 原生 API 请求构建
+# ─────────────────────────────────────────────────────────────────
+
+
+def _build_anthropic_body(body: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    """OpenAI 格式 → Anthropic Messages API 格式。"""
+    msgs = body.get("messages") or []
+    out: dict[str, Any] = {"model": settings.anthropic_model}
+
+    # 提取 system prompt（Anthropic 用顶层 system 字段）
+    system_parts: list[dict[str, Any]] = []
+    conversation: list[dict[str, Any]] = []
+    for m in msgs:
+        if not isinstance(m, dict):
+            continue
+        if m.get("role") == "system":
+            c = m.get("content")
+            if isinstance(c, str) and c.strip():
+                system_parts.append({"type": "text", "text": c})
+            elif isinstance(c, list):
+                system_parts.extend(c)
+        else:
+            conversation.append(m)
+    if system_parts:
+        # 在最后一个 system block 上加 cache_control
+        if settings.cache_enabled:
+            system_parts[-1]["cache_control"] = {"type": "ephemeral"}
+        out["system"] = system_parts
+
+    # 转换 messages: OpenAI → Anthropic
+    anthropic_msgs: list[dict[str, Any]] = []
+    for m in conversation:
+        role = m.get("role", "")
+
+        if role == "assistant":
+            content_blocks: list[dict[str, Any]] = []
+            # 文本内容
+            c = m.get("content")
+            if isinstance(c, str) and c.strip():
+                content_blocks.append({"type": "text", "text": c})
+            elif isinstance(c, list):
+                content_blocks.extend(c)
+            # tool_calls → tool_use blocks
+            tcs = m.get("tool_calls")
+            if isinstance(tcs, list):
+                for tc in tcs:
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function", {})
+                    args_str = fn.get("arguments", "{}")
+                    try:
+                        args_obj = json.loads(args_str) if isinstance(args_str, str) else args_str
+                    except (json.JSONDecodeError, TypeError):
+                        args_obj = {}
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc.get("id", ""),
+                        "name": fn.get("name", ""),
+                        "input": args_obj or {},
+                    })
+            if content_blocks:
+                anthropic_msgs.append({"role": "assistant", "content": content_blocks})
+
+        elif role == "tool":
+            # OpenAI tool result → Anthropic tool_result block in user message
+            tc_id = m.get("tool_call_id", "")
+            tc_content = m.get("content", "")
+            result_block = {
+                "type": "tool_result",
+                "tool_use_id": tc_id,
+                "content": tc_content if isinstance(tc_content, str) else str(tc_content),
+            }
+            # Anthropic 要求 tool_result 放在 user 消息中
+            if anthropic_msgs and anthropic_msgs[-1].get("role") == "user":
+                anthropic_msgs[-1]["content"].append(result_block)
+            else:
+                anthropic_msgs.append({"role": "user", "content": [result_block]})
+
+        elif role == "user":
+            c = m.get("content")
+            if isinstance(c, str):
+                blocks = [{"type": "text", "text": c}]
+            elif isinstance(c, list):
+                blocks = c
+            else:
+                continue
+            # 合并连续 user 消息
+            if anthropic_msgs and anthropic_msgs[-1].get("role") == "user":
+                anthropic_msgs[-1]["content"].extend(blocks)
+            else:
+                anthropic_msgs.append({"role": "user", "content": blocks})
+
+    out["messages"] = anthropic_msgs
+
+    # Tools → Anthropic 格式
+    tools = body.get("tools")
+    if isinstance(tools, list) and tools:
+        anthropic_tools: list[dict[str, Any]] = []
+        for t in tools:
+            if not isinstance(t, dict):
+                continue
+            fn = t.get("function", {})
+            if not isinstance(fn, dict):
+                continue
+            atool: dict[str, Any] = {
+                "name": fn.get("name", ""),
+                "input_schema": fn.get("parameters", {}),
+            }
+            desc = fn.get("description")
+            if desc:
+                atool["description"] = desc
+            anthropic_tools.append(atool)
+        if anthropic_tools:
+            # 最后一个 tool 上加 cache_control
+            if settings.cache_enabled:
+                anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
+            out["tools"] = anthropic_tools
+
+    # Tool choice
+    tc = body.get("tool_choice")
+    if tc == "auto":
+        out["tool_choice"] = {"type": "auto"}
+    elif tc == "required":
+        out["tool_choice"] = {"type": "any"}
+    elif tc == "none":
+        pass  # Anthropic default
+    elif isinstance(tc, dict) and tc.get("type") == "function":
+        fn = tc.get("function", {})
+        out["tool_choice"] = {"type": "tool", "name": fn.get("name", "")}
+
+    # max_tokens 必传
+    mt = body.get("max_tokens")
+    out["max_tokens"] = int(mt) if mt else 64000
+
+    # stream
+    if body.get("stream"):
+        out["stream"] = True
+
+    # temperature, top_p
+    for k in ("temperature", "top_p"):
+        v = body.get(k)
+        if v is not None:
+            out[k] = v
+
+    # 历史消息 cache breakpoint（倒数第二条 user 消息）
+    if settings.cache_enabled and len(anthropic_msgs) >= 3:
+        user_indices = [i for i, m in enumerate(anthropic_msgs) if m.get("role") == "user"]
+        if len(user_indices) >= 2:
+            prev_user = anthropic_msgs[user_indices[-2]]
+            blocks = prev_user.get("content", [])
+            if isinstance(blocks, list) and blocks:
+                last_block = blocks[-1]
+                if isinstance(last_block, dict):
+                    last_block["cache_control"] = {"type": "ephemeral"}
+
+    return out
+
+
+def anthropic_response_to_openai(resp: dict[str, Any]) -> dict[str, Any]:
+    """Anthropic Messages API 响应 → OpenAI chat.completion 格式。"""
+    content_blocks = resp.get("content") or []
+    text_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    tc_index = 0
+
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            t = block.get("text", "")
+            if t:
+                text_parts.append(t)
+        elif block.get("type") == "tool_use":
+            inp = block.get("input", {})
+            tool_calls.append({
+                "id": block.get("id", ""),
+                "type": "function",
+                "function": {
+                    "name": block.get("name", ""),
+                    "arguments": json.dumps(inp, ensure_ascii=False) if inp else "{}",
+                },
+                "index": tc_index,
+            })
+            tc_index += 1
+
+    msg: dict[str, Any] = {"role": "assistant"}
+    msg["content"] = "\n".join(text_parts) if text_parts else None
+    if tool_calls:
+        msg["tool_calls"] = tool_calls
+
+    # stop_reason 映射
+    sr = resp.get("stop_reason", "end_turn")
+    finish_map = {"end_turn": "stop", "tool_use": "tool_calls", "max_tokens": "length", "stop_sequence": "stop"}
+    finish_reason = finish_map.get(sr, "stop")
+
+    # usage 映射
+    u = resp.get("usage", {})
+    usage = {
+        "prompt_tokens": u.get("input_tokens", 0),
+        "completion_tokens": u.get("output_tokens", 0),
+        "total_tokens": u.get("input_tokens", 0) + u.get("output_tokens", 0),
+    }
+    # 透传缓存 token 信息
+    if "cache_creation_input_tokens" in u:
+        usage["cache_creation_input_tokens"] = u["cache_creation_input_tokens"]
+    if "cache_read_input_tokens" in u:
+        usage["cache_read_input_tokens"] = u["cache_read_input_tokens"]
+
+    return {
+        "id": resp.get("id", ""),
+        "object": "chat.completion",
+        "model": resp.get("model", ""),
+        "choices": [{"index": 0, "message": msg, "finish_reason": finish_reason}],
+        "usage": usage,
+    }
 
 
 def openrouter_headers(settings: Settings) -> dict[str, str]:
@@ -740,3 +967,24 @@ def openrouter_headers(settings: Settings) -> dict[str, str]:
     if title:
         h["X-Title"] = title
     return h
+
+
+def anthropic_headers(settings: Settings) -> dict[str, str]:
+    return {
+        "x-api-key": settings.anthropic_api_key,
+        "anthropic-version": settings.anthropic_version,
+        "anthropic-beta": "prompt-caching-2024-07-31",
+        "content-type": "application/json",
+    }
+
+
+def get_upstream_url(settings: Settings) -> str:
+    if settings.upstream_provider == "anthropic":
+        return f"{settings.anthropic_base_url.rstrip('/')}/v1/messages"
+    return f"{settings.upstream_base_url.rstrip('/')}/chat/completions"
+
+
+def get_upstream_headers(settings: Settings) -> dict[str, str]:
+    if settings.upstream_provider == "anthropic":
+        return anthropic_headers(settings)
+    return openrouter_headers(settings)

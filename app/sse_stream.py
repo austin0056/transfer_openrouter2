@@ -102,3 +102,175 @@ def finish_reason_from_chunk(chunk: dict[str, Any]) -> str | None:
         if fr is not None:
             return str(fr)
     return None
+
+
+# ─────────────────────────────────────────────────────────────────
+# Anthropic 原生 SSE → OpenAI chunk 实时转换
+# ─────────────────────────────────────────────────────────────────
+
+_STOP_REASON_MAP = {
+    "end_turn": "stop",
+    "tool_use": "tool_calls",
+    "max_tokens": "length",
+    "stop_sequence": "stop",
+}
+
+
+class AnthropicStreamState:
+    """跟踪 Anthropic SSE 流状态，用于实时转换为 OpenAI chunk。"""
+
+    def __init__(self) -> None:
+        self.message_id: str = ""
+        self.model: str = ""
+        self.current_block_index: int = -1
+        self.current_block_type: str = ""
+        self.tool_call_index: int = -1  # OpenAI tool_calls 的索引
+        self.text_parts: list[str] = []
+        self.tool_bucket: dict[int, dict[str, Any]] = {}
+        self.usage: dict[str, Any] | None = None
+        self.finish_reason: str | None = None
+
+
+def parse_anthropic_sse(raw_lines: list[str]) -> tuple[str, dict[str, Any] | None]:
+    """从 Anthropic SSE 行中提取 event type 和 data。
+
+    Anthropic SSE 格式：
+      event: content_block_delta
+      data: {"type":"content_block_delta",...}
+    """
+    event_type = ""
+    data_str = ""
+    for line in raw_lines:
+        line = line.strip()
+        if line.startswith("event:"):
+            event_type = line[6:].strip()
+        elif line.startswith("data:"):
+            data_str = line[5:].strip()
+    if not data_str:
+        return event_type, None
+    try:
+        return event_type, json.loads(data_str)
+    except json.JSONDecodeError:
+        return event_type, None
+
+
+def anthropic_event_to_openai_chunk(
+    event_type: str,
+    data: dict[str, Any],
+    state: AnthropicStreamState,
+) -> str | None:
+    """将单个 Anthropic SSE 事件转为 OpenAI SSE chunk 字符串。返回 None 表示跳过。"""
+    msg_id = state.message_id
+    model = state.model
+    dtype = data.get("type", "")
+
+    if dtype == "message_start":
+        msg = data.get("message", {})
+        state.message_id = msg.get("id", "")
+        state.model = msg.get("model", "")
+        # 提取 input usage
+        u = msg.get("usage", {})
+        state.usage = {
+            "prompt_tokens": u.get("input_tokens", 0),
+            "completion_tokens": 0,
+            "total_tokens": u.get("input_tokens", 0),
+        }
+        if "cache_creation_input_tokens" in u:
+            state.usage["cache_creation_input_tokens"] = u["cache_creation_input_tokens"]
+        if "cache_read_input_tokens" in u:
+            state.usage["cache_read_input_tokens"] = u["cache_read_input_tokens"]
+        return None  # 不输出 chunk
+
+    if dtype == "content_block_start":
+        state.current_block_index = data.get("index", 0)
+        cb = data.get("content_block", {})
+        state.current_block_type = cb.get("type", "text")
+
+        if state.current_block_type == "tool_use":
+            state.tool_call_index += 1
+            idx = state.tool_call_index
+            tc_id = cb.get("id", "")
+            tc_name = cb.get("name", "")
+            state.tool_bucket[idx] = {
+                "id": tc_id, "type": "function",
+                "function": {"name": tc_name, "arguments": ""},
+            }
+            chunk = _make_openai_chunk(state, delta={
+                "tool_calls": [{"index": idx, "id": tc_id, "type": "function",
+                                "function": {"name": tc_name, "arguments": ""}}]
+            })
+            return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+        if state.current_block_type == "text":
+            # 第一个 text block 发送 role
+            chunk = _make_openai_chunk(state, delta={"role": "assistant", "content": ""})
+            return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+        return None
+
+    if dtype == "content_block_delta":
+        delta = data.get("delta", {})
+        delta_type = delta.get("type", "")
+
+        if delta_type == "text_delta":
+            text = delta.get("text", "")
+            if text:
+                state.text_parts.append(text)
+                chunk = _make_openai_chunk(state, delta={"content": text})
+                return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+        elif delta_type == "input_json_delta":
+            partial = delta.get("partial_json", "")
+            if partial and state.tool_call_index >= 0:
+                idx = state.tool_call_index
+                state.tool_bucket[idx]["function"]["arguments"] += partial
+                chunk = _make_openai_chunk(state, delta={
+                    "tool_calls": [{"index": idx, "function": {"arguments": partial}}]
+                })
+                return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+        return None
+
+    if dtype == "content_block_stop":
+        return None
+
+    if dtype == "message_delta":
+        d = data.get("delta", {})
+        sr = d.get("stop_reason")
+        if sr:
+            state.finish_reason = _STOP_REASON_MAP.get(sr, "stop")
+        u = data.get("usage", {})
+        if u and state.usage:
+            state.usage["completion_tokens"] = u.get("output_tokens", 0)
+            state.usage["total_tokens"] = (
+                state.usage.get("prompt_tokens", 0) + u.get("output_tokens", 0)
+            )
+        # 输出 finish chunk
+        chunk = _make_openai_chunk(state, delta={}, finish=state.finish_reason)
+        return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+    if dtype == "message_stop":
+        return "data: [DONE]\n\n"
+
+    return None
+
+
+def _make_openai_chunk(
+    state: AnthropicStreamState,
+    delta: dict[str, Any],
+    finish: str | None = None,
+) -> dict[str, Any]:
+    choice: dict[str, Any] = {"index": 0, "delta": delta}
+    if finish:
+        choice["finish_reason"] = finish
+    else:
+        choice["finish_reason"] = None
+    chunk: dict[str, Any] = {
+        "id": f"chatcmpl-{state.message_id}",
+        "object": "chat.completion.chunk",
+        "model": state.model,
+        "choices": [choice],
+    }
+    if finish and state.usage:
+        chunk["usage"] = state.usage
+    return chunk
