@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from copy import deepcopy
+from copy import copy, deepcopy
 from typing import Any
 
 from app.config import Settings
@@ -743,9 +743,21 @@ def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
                             block["text"] = txt[:assistant_max] + f"\n\n[...truncated]"
 
 
+def _shallow_body_copy(src: dict[str, Any]) -> dict[str, Any]:
+    """浅拷贝请求体：顶层 dict + messages 列表各项独立拷贝（修改安全且快）。"""
+    body = dict(src)
+    msgs = src.get("messages")
+    if isinstance(msgs, list):
+        body["messages"] = [dict(m) if isinstance(m, dict) else m for m in msgs]
+    tools = src.get("tools")
+    if isinstance(tools, list):
+        body["tools"] = [deepcopy(t) for t in tools]  # tools 可能被修改（cache_control），需深拷贝
+    return body
+
+
 def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) -> dict[str, Any]:
     """根据 upstream_provider 构建请求体。"""
-    body = deepcopy(client_body)
+    body = _shallow_body_copy(client_body)
     _adapt_openai_body_for_upstream(body, settings)
     _inject_identity_prompt(body, settings)
     _inject_efficiency_prompt(body, settings)
@@ -1029,7 +1041,7 @@ _EXECUTOR_SYSTEM = (
 
 def build_planner_body(merged: dict[str, Any], settings: Settings) -> dict[str, Any]:
     """构造规划请求：Opus 看完整上下文，输出思考 + JSON 执行指令。"""
-    body = deepcopy(merged)
+    body = _shallow_body_copy(merged)
     body["model"] = settings.planner_model
     body["stream"] = True
     # 不设 max_tokens，让 Opus 充分思考（缓存命中让 input 几乎免费）

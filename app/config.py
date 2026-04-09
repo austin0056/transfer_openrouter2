@@ -73,8 +73,8 @@ class Settings(BaseSettings):
 
     request_timeout_seconds: float = 600.0
     connect_timeout_seconds: float = 30.0
-    http_max_connections: int = 100
-    http_max_keepalive: int = 20
+    http_max_connections: int = 200
+    http_max_keepalive: int = 50
 
     max_request_body_mb: int = 50
 
@@ -108,8 +108,12 @@ class Settings(BaseSettings):
         return max(1, min(i, 10_000))
 
 
+import time as _time
+
 _settings: Settings | None = None
 _settings_file_mtime: float | None = None
+_settings_check_at: float = 0.0  # monotonic timestamp of last mtime check
+_SETTINGS_CHECK_INTERVAL = 5.0   # 秒：两次 mtime 检查之间的最小间隔
 
 
 def _config_file_mtime() -> float:
@@ -157,8 +161,12 @@ def _load_merged_settings() -> Settings:
 
 
 def get_settings() -> Settings:
-    """每次比对 CONFIG_FILE 修改时间；多 worker 时避免只在保存请求所在进程生效、其它进程仍用旧 upstream_model。"""
-    global _settings, _settings_file_mtime
+    """比对 CONFIG_FILE 修改时间，但每 5 秒才检查一次文件系统（避免每请求 stat 开销）。"""
+    global _settings, _settings_file_mtime, _settings_check_at
+    now = _time.monotonic()
+    if _settings is not None and (now - _settings_check_at) < _SETTINGS_CHECK_INTERVAL:
+        return _settings
+    _settings_check_at = now
     mtime = _config_file_mtime()
     if _settings is None or mtime != _settings_file_mtime:
         _settings = _load_merged_settings()
