@@ -1002,7 +1002,7 @@ You are the PLANNER in a dual-model system. Your thinking is streamed to the use
 An executor model will perform the actual tool calls based on your instructions.
 
 RULES:
-1. Think through the task step by step in English (saves tokens).
+1. Think through the task step by step.
 2. After your analysis, output a PRECISE execution plan.
 3. DO NOT output tool_calls yourself. Instead, end your response with a JSON block:
 
@@ -1028,7 +1028,7 @@ _EXECUTOR_SYSTEM = (
 
 
 def build_planner_body(merged: dict[str, Any], settings: Settings) -> dict[str, Any]:
-    """构造规划请求：Opus 看完整上下文，输出英文思考 + JSON 执行指令。"""
+    """构造规划请求：Opus 看完整上下文，输出思考 + JSON 执行指令。"""
     body = deepcopy(merged)
     body["model"] = settings.planner_model
     body["stream"] = True
