@@ -265,6 +265,16 @@ _ADMIN_HTML = """<!DOCTYPE html>
           <p class="field-desc">一般为 <code>https://openrouter.ai/api/v1</code>。</p>
           <input type="text" name="upstream_base_url" placeholder="https://openrouter.ai/api/v1"/>
         </div>
+        <div class="field">
+          <div class="field-head"><span class="field-title">OpenRouter HTTP-Referer（可选）</span><span class="field-key">openrouter_http_referer</span></div>
+          <p class="field-desc">OpenRouter 统计用 URL，例如公开仓库链接。</p>
+          <input type="text" name="openrouter_http_referer" placeholder="https://github.com/you/repo"/>
+        </div>
+        <div class="field">
+          <div class="field-head"><span class="field-title">OpenRouter X-Title（可选）</span><span class="field-key">openrouter_app_title</span></div>
+          <p class="field-desc">在 OpenRouter 侧展示的应用标题。</p>
+          <input type="text" name="openrouter_app_title" placeholder="OpenRouter Gateway"/>
+        </div>
       </div>
 
       <div id="anthropicFields" style="display:none">
@@ -290,29 +300,17 @@ _ADMIN_HTML = """<!DOCTYPE html>
         </div>
       </div>
 
-      <div class="field">
-        <div class="field-head"><span class="field-title">OpenRouter HTTP-Referer（可选）</span><span class="field-key">openrouter_http_referer</span></div>
-        <p class="field-desc">OpenRouter 统计用 URL，例如公开仓库链接。</p>
-        <input type="text" name="openrouter_http_referer" placeholder="https://github.com/you/repo"/>
-      </div>
-
-      <div class="field">
-        <div class="field-head"><span class="field-title">OpenRouter X-Title（可选）</span><span class="field-key">openrouter_app_title</span></div>
-        <p class="field-desc">在 OpenRouter 侧展示的应用标题。</p>
-        <input type="text" name="openrouter_app_title" placeholder="OpenRouter Gateway"/>
-      </div>
-
       <div class="checks">
         <div class="check-item">
           <label><input type="checkbox" name="loose_tools_passthrough"/>
             <span><span class="t">宽松工具透传</span><span class="field-key" style="display:inline;margin-left:6px">loose_tools_passthrough</span>
-            <span class="d">开启后保留非 <code>function</code> 标准形态的 <code>tools</code> 项（如部分客户端扩展）；关闭时仅保留带合法 <code>function.name</code> 的项。上游报错时可先关闭排查。</span></span>
+            <span class="d">开启后保留非 <code>function</code> 标准形态的 <code>tools</code> 项；关闭时仅保留带合法 <code>function.name</code> 的项。</span></span>
           </label>
         </div>
         <div class="check-item">
           <label><input type="checkbox" name="log_chat_metadata"/>
             <span><span class="t">记录对话元数据日志</span><span class="field-key" style="display:inline;margin-left:6px">log_chat_metadata</span>
-            <span class="d">每条 chat 一行 INFO：流式与否、tools 数量、请求/响应 model，<strong>不包含</strong>消息正文，便于对照 Cursor 与 OpenRouter。</span></span>
+            <span class="d">每条 chat 一行 INFO：流式与否、tools 数量、请求/响应 model，<strong>不包含</strong>消息正文。</span></span>
           </label>
         </div>
       </div>
