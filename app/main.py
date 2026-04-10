@@ -700,24 +700,47 @@ async def _stream_chat(
                     # Anthropic SSE → 实时转为 OpenAI SSE chunk
                     anth_state = AnthropicStreamState()
                     event_type = ""
+                    last_data_at = time.monotonic()
+                    idle_timeout = float(getattr(settings, "stream_idle_timeout_seconds", 60.0))
                     async for line in r.aiter_lines():
                         if await request.is_disconnected():
                             break
+
+                        # Idle 检测：超过阈值无数据则主动关闭
+                        now = time.monotonic()
+                        if now - last_data_at > idle_timeout:
+                            logger.warning(
+                                "stream idle > %.1fs session=%s, forcing close",
+                                idle_timeout, session_external,
+                            )
+                            break
+                        last_data_at = now
+
                         line_s = line.strip()
+                        # 透传 SSE 注释行作为心跳（: comment）
+                        if line_s.startswith(":"):
+                            yield line_s + "\n\n"
+                            continue
                         if line_s.startswith("event:"):
                             event_type = line_s[6:].strip()
                             continue
                         if not line_s.startswith("data:"):
                             continue
                         data_str = line_s[5:].strip()
+                        if not data_str:
+                            continue
                         try:
                             data = json.loads(data_str)
-                        except json.JSONDecodeError:
+                        except json.JSONDecodeError as je:
+                            logger.warning(
+                                "malformed anthropic SSE data session=%s: %s (err=%s)",
+                                session_external, data_str[:200], je,
+                            )
                             continue
                         chunk_str = anthropic_event_to_openai_chunk(event_type, data, anth_state)
                         if chunk_str:
                             yield chunk_str
-                            if chunk_str.strip() == "data: [DONE]":
+                            if "data: [DONE]" in chunk_str:
                                 got_done = True
                         # 同步内部状态
                         if anth_state.model:

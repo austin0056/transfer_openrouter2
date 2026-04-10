@@ -129,6 +129,7 @@ class AnthropicStreamState:
         self.tool_bucket: dict[int, dict[str, Any]] = {}
         self.usage: dict[str, Any] | None = None
         self.finish_reason: str | None = None
+        self.error_emitted: bool = False  # 是否已发过 error chunk
 
 
 def parse_anthropic_sse(raw_lines: list[str]) -> tuple[str, dict[str, Any] | None]:
@@ -163,6 +164,32 @@ def anthropic_event_to_openai_chunk(
     msg_id = state.message_id
     model = state.model
     dtype = data.get("type", "")
+
+    # 错误事件：将错误转为 OpenAI 格式的错误 chunk + [DONE]
+    if dtype == "error" or event_type == "error":
+        if state.error_emitted:
+            return None
+        state.error_emitted = True
+        err_info = data.get("error", {}) if isinstance(data.get("error"), dict) else {}
+        err_msg = err_info.get("message", "upstream error")
+        err_chunk = {
+            "id": f"chatcmpl-{state.message_id or 'error'}",
+            "object": "chat.completion.chunk",
+            "model": state.model or "",
+            "choices": [{
+                "index": 0,
+                "delta": {"content": f"\n\n[Upstream error: {err_msg}]"},
+                "finish_reason": "stop",
+            }],
+        }
+        return (
+            f"data: {json.dumps(err_chunk, ensure_ascii=False)}\n\n"
+            "data: [DONE]\n\n"
+        )
+
+    # Ping 事件：返回 SSE 注释行作为心跳透传给客户端
+    if dtype == "ping" or event_type == "ping":
+        return ": ping\n\n"
 
     if dtype == "message_start":
         msg = data.get("message", {})
@@ -228,6 +255,10 @@ def anthropic_event_to_openai_chunk(
                     "tool_calls": [{"index": idx, "function": {"arguments": partial}}]
                 })
                 return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+        elif delta_type in ("thinking_delta", "signature_delta"):
+            # 扩展思考模式：不输出给客户端但也不报错，保持流继续
+            return None
 
         return None
 
