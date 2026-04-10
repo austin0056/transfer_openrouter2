@@ -660,6 +660,25 @@ def _sort_tools(body: dict[str, Any]) -> None:
 _MAX_CONVERSATION_MESSAGES = 80  # 超过此数量则丢弃最旧的轮次
 
 
+def _is_tool_result_only(msg: Any) -> bool:
+    """判断一条 user 消息是否只包含 tool_result block 而无文本。"""
+    if not isinstance(msg, dict) or msg.get("role") != "user":
+        return False
+    c = msg.get("content")
+    if not isinstance(c, list) or not c:
+        return False
+    has_text = False
+    has_tool_result = False
+    for block in c:
+        if isinstance(block, dict):
+            btype = block.get("type", "")
+            if btype == "tool_result":
+                has_tool_result = True
+            elif btype == "text" and isinstance(block.get("text"), str) and block["text"].strip():
+                has_text = True
+    return has_tool_result and not has_text
+
+
 def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
     """压缩历史消息：限制总数 + 截断旧内容。
 
@@ -673,24 +692,48 @@ def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
     if not isinstance(msgs, list):
         return
 
+    # ── 第零步：过滤空 assistant 消息（content 和 tool_calls 都为空）──
+    msgs = [
+        m for m in msgs
+        if not (
+            isinstance(m, dict)
+            and m.get("role") == "assistant"
+            and _is_empty_content(m.get("content"))
+            and not m.get("tool_calls")
+        )
+    ]
+
     # ── 第一步：消息数量硬限制 ──
     if len(msgs) > _MAX_CONVERSATION_MESSAGES:
         # 保留第一条（system）+ 最近的消息
         system_msgs = []
         rest = msgs
-        if msgs and isinstance(msgs[0], dict) and msgs[0].get("role") in ("system",):
+        if msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system":
             system_msgs = [msgs[0]]
             rest = msgs[1:]
 
-        # 保留最后 N 条，确保从 user/assistant 消息开始（不要从 tool 开始）
+        # 保留最后 N 条
         keep = rest[-(_MAX_CONVERSATION_MESSAGES - len(system_msgs)):]
-        # 找到第一条非 tool 消息
+
+        # 关键：Anthropic 要求对话必须从 user 开始
+        # 从后向前找最后一条 user 消息之前的所有 user 位置，
+        # 确保第一条是 user，且不孤立 tool_result
         start = 0
         for i, m in enumerate(keep):
-            if isinstance(m, dict) and m.get("role") in ("user", "assistant"):
+            if isinstance(m, dict) and m.get("role") == "user":
                 start = i
                 break
+        else:
+            # 全是 assistant/tool，清空
+            keep = []
+            start = 0
         keep = keep[start:]
+
+        # 再次检查：如果第一条 user 消息的 content 只有 tool_result block（没有文本），
+        # 而前面又没有对应的 assistant 带 tool_use，则删掉这条 tool_result-only user
+        while keep and _is_tool_result_only(keep[0]):
+            keep = keep[1:]
+
         msgs = system_msgs + keep
         body["messages"] = msgs
 
