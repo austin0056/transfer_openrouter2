@@ -701,9 +701,11 @@ async def _stream_chat(
                     anth_state = AnthropicStreamState()
                     event_type = ""
                     last_data_at = time.monotonic()
+                    last_yield_at = time.monotonic()
                     idle_timeout = float(getattr(settings, "stream_idle_timeout_seconds", 60.0))
                     chunk_count = 0
                     first_chunk_at: float | None = None
+                    HEARTBEAT_INTERVAL = 2.0  # 思考阶段每 2 秒心跳
                     if settings.log_chat_metadata:
                         logger.info("stream_start session=%s upstream=anthropic", session_external)
                     async for line in r.aiter_lines():
@@ -757,6 +759,7 @@ async def _stream_chat(
                         if chunk_str:
                             yield chunk_str
                             chunk_count += 1
+                            last_yield_at = time.monotonic()
                             if "data: [DONE]" in chunk_str:
                                 got_done = True
                                 if settings.log_chat_metadata:
@@ -764,6 +767,12 @@ async def _stream_chat(
                                         "stream_done session=%s chunks=%d total=%.2fs",
                                         session_external, chunk_count, time.monotonic() - t0,
                                     )
+                        else:
+                            # 处理了事件但没 yield 到客户端（如 thinking_delta、message_start）
+                            # 超过心跳阈值就发 SSE 注释行，防止客户端认为连接死
+                            if now - last_yield_at >= HEARTBEAT_INTERVAL:
+                                yield ": heartbeat\n\n"
+                                last_yield_at = now
                         # 同步内部状态
                         if anth_state.model:
                             stream_resp_model = anth_state.model
