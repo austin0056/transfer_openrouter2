@@ -702,19 +702,35 @@ async def _stream_chat(
                     event_type = ""
                     last_data_at = time.monotonic()
                     idle_timeout = float(getattr(settings, "stream_idle_timeout_seconds", 60.0))
+                    chunk_count = 0
+                    first_chunk_at: float | None = None
+                    if settings.log_chat_metadata:
+                        logger.info("stream_start session=%s upstream=anthropic", session_external)
                     async for line in r.aiter_lines():
                         if await request.is_disconnected():
+                            if settings.log_chat_metadata:
+                                logger.info(
+                                    "stream_client_disconnect session=%s chunks=%d",
+                                    session_external, chunk_count,
+                                )
                             break
 
                         # Idle 检测：超过阈值无数据则主动关闭
                         now = time.monotonic()
                         if now - last_data_at > idle_timeout:
                             logger.warning(
-                                "stream idle > %.1fs session=%s, forcing close",
-                                idle_timeout, session_external,
+                                "stream idle > %.1fs session=%s chunks=%d, forcing close",
+                                idle_timeout, session_external, chunk_count,
                             )
                             break
                         last_data_at = now
+                        if first_chunk_at is None:
+                            first_chunk_at = now
+                            if settings.log_chat_metadata:
+                                logger.info(
+                                    "stream_first_byte session=%s delay=%.2fs",
+                                    session_external, now - t0,
+                                )
 
                         line_s = line.strip()
                         # 透传 SSE 注释行作为心跳（: comment）
@@ -740,8 +756,14 @@ async def _stream_chat(
                         chunk_str = anthropic_event_to_openai_chunk(event_type, data, anth_state)
                         if chunk_str:
                             yield chunk_str
+                            chunk_count += 1
                             if "data: [DONE]" in chunk_str:
                                 got_done = True
+                                if settings.log_chat_metadata:
+                                    logger.info(
+                                        "stream_done session=%s chunks=%d total=%.2fs",
+                                        session_external, chunk_count, time.monotonic() - t0,
+                                    )
                         # 同步内部状态
                         if anth_state.model:
                             stream_resp_model = anth_state.model
@@ -753,6 +775,15 @@ async def _stream_chat(
                         if anth_state.usage:
                             last_usage = anth_state.usage
                         event_type = ""
+                    # 循环结束后如果没收到 DONE，记录异常
+                    if not got_done and settings.log_chat_metadata:
+                        logger.warning(
+                            "stream_exit_without_done session=%s chunks=%d total=%.2fs "
+                            "last_finish=%s text_len=%d tool_calls=%d",
+                            session_external, chunk_count, time.monotonic() - t0,
+                            last_finish, len("".join(anth_state.text_parts)),
+                            len(anth_state.tool_bucket),
+                        )
                 else:
                     # OpenRouter/OpenAI SSE 透传
                     async for line in r.aiter_lines():
