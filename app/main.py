@@ -705,10 +705,14 @@ async def _stream_chat(
                     idle_timeout = float(getattr(settings, "stream_idle_timeout_seconds", 60.0))
                     chunk_count = 0
                     first_chunk_at: float | None = None
-                    HEARTBEAT_INTERVAL = 2.0  # 思考阶段每 2 秒心跳
+                    HEARTBEAT_INTERVAL = 2.0  # 每 2 秒发心跳（即使上游 stall）
                     if settings.log_chat_metadata:
                         logger.info("stream_start session=%s upstream=anthropic", session_external)
-                    async for line in r.aiter_lines():
+
+                    # 使用带超时的迭代，避免 aiter_lines 长时间 block
+                    line_iter = r.aiter_lines().__aiter__()
+                    stop_reading = False
+                    while not stop_reading:
                         if await request.is_disconnected():
                             if settings.log_chat_metadata:
                                 logger.info(
@@ -716,15 +720,29 @@ async def _stream_chat(
                                     session_external, chunk_count,
                                 )
                             break
-
-                        # Idle 检测：超过阈值无数据则主动关闭
-                        now = time.monotonic()
-                        if now - last_data_at > idle_timeout:
-                            logger.warning(
-                                "stream idle > %.1fs session=%s chunks=%d, forcing close",
-                                idle_timeout, session_external, chunk_count,
+                        try:
+                            # 最多等 HEARTBEAT_INTERVAL 秒拿一行，拿不到就发心跳
+                            line = await asyncio.wait_for(
+                                line_iter.__anext__(),
+                                timeout=HEARTBEAT_INTERVAL,
                             )
+                        except asyncio.TimeoutError:
+                            # 上游 stall — 发心跳保持连接
+                            now = time.monotonic()
+                            if now - last_data_at > idle_timeout:
+                                logger.warning(
+                                    "stream idle > %.1fs session=%s chunks=%d, forcing close",
+                                    idle_timeout, session_external, chunk_count,
+                                )
+                                break
+                            yield ": heartbeat\n\n"
+                            last_yield_at = now
+                            continue
+                        except StopAsyncIteration:
+                            # 上游流正常结束
                             break
+
+                        now = time.monotonic()
                         last_data_at = now
                         if first_chunk_at is None:
                             first_chunk_at = now
@@ -784,6 +802,8 @@ async def _stream_chat(
                         if anth_state.usage:
                             last_usage = anth_state.usage
                         event_type = ""
+                        if got_done:
+                            stop_reading = True
                     # 循环结束后如果没收到 DONE，记录异常
                     if not got_done and settings.log_chat_metadata:
                         logger.warning(
