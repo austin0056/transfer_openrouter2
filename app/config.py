@@ -73,7 +73,7 @@ class Settings(BaseSettings):
 
     request_timeout_seconds: float = 600.0
     connect_timeout_seconds: float = 30.0
-    stream_idle_timeout_seconds: float = 60.0
+    stream_idle_timeout_seconds: float = 300.0
     http_max_connections: int = 200
     http_max_keepalive: int = 50
 

@@ -209,6 +209,28 @@ async def list_models(
     }
 
 
+# 疑似"丢失上下文"的通用开场白响应模式
+_SUSPICIOUS_GENERIC_OPENINGS = (
+    "I'm ready to help",
+    "I'll assist you",
+    "How can I help",
+    "What would you like",
+    "I don't have any context",
+    "I don't have the context",
+    "could you please provide more information",
+    "could you please clarify",
+    "Please let me know what you'd like",
+)
+
+
+def _is_suspicious_generic_response(text: str) -> bool:
+    """检测响应是否是'新会话风格'的通用开场白（说明上下文丢失）。"""
+    if not text:
+        return False
+    head = text[:400].lower()
+    return any(s.lower() in head for s in _SUSPICIOUS_GENERIC_OPENINGS)
+
+
 async def _enqueue_persist(
     app: FastAPI,
     job: PersistJob,
@@ -702,9 +724,10 @@ async def _stream_chat(
                     event_type = ""
                     last_data_at = time.monotonic()
                     last_yield_at = time.monotonic()
-                    idle_timeout = float(getattr(settings, "stream_idle_timeout_seconds", 60.0))
+                    idle_timeout = float(getattr(settings, "stream_idle_timeout_seconds", 300.0))
                     chunk_count = 0
                     first_chunk_at: float | None = None
+                    abnormal_exit_reason: str | None = None  # 异常退出原因（用于发错误 chunk）
                     HEARTBEAT_INTERVAL = 2.0  # 每 2 秒发心跳（即使上游 stall）
                     if settings.log_chat_metadata:
                         logger.info("stream_start session=%s upstream=anthropic", session_external)
@@ -719,6 +742,7 @@ async def _stream_chat(
                                     "stream_client_disconnect session=%s chunks=%d",
                                     session_external, chunk_count,
                                 )
+                            abnormal_exit_reason = "client_disconnected"
                             break
                         try:
                             # 最多等 HEARTBEAT_INTERVAL 秒拿一行，拿不到就发心跳
@@ -734,12 +758,20 @@ async def _stream_chat(
                                     "stream idle > %.1fs session=%s chunks=%d, forcing close",
                                     idle_timeout, session_external, chunk_count,
                                 )
+                                abnormal_exit_reason = (
+                                    f"upstream stalled for {idle_timeout}s — no data received"
+                                )
                                 break
                             yield ": heartbeat\n\n"
                             last_yield_at = now
                             continue
                         except StopAsyncIteration:
                             # 上游流正常结束
+                            if not got_done:
+                                # 上游流结束但没发 message_stop，这是异常
+                                abnormal_exit_reason = (
+                                    "upstream stream ended without message_stop"
+                                )
                             break
 
                         now = time.monotonic()
@@ -804,15 +836,38 @@ async def _stream_chat(
                         event_type = ""
                         if got_done:
                             stop_reading = True
-                    # 循环结束后如果没收到 DONE，记录异常
-                    if not got_done and settings.log_chat_metadata:
-                        logger.warning(
-                            "stream_exit_without_done session=%s chunks=%d total=%.2fs "
-                            "last_finish=%s text_len=%d tool_calls=%d",
-                            session_external, chunk_count, time.monotonic() - t0,
-                            last_finish, len("".join(anth_state.text_parts)),
-                            len(anth_state.tool_bucket),
-                        )
+                    # 循环结束后如果是异常退出，明确告知客户端 — 不要发假 DONE
+                    if not got_done:
+                        reason = abnormal_exit_reason or "stream ended unexpectedly"
+                        if settings.log_chat_metadata:
+                            logger.warning(
+                                "stream_exit_without_done session=%s chunks=%d total=%.2fs "
+                                "reason=%s last_finish=%s text_len=%d tool_calls=%d",
+                                session_external, chunk_count, time.monotonic() - t0,
+                                reason, last_finish,
+                                len("".join(anth_state.text_parts)),
+                                len(anth_state.tool_bucket),
+                            )
+                        # 发送错误 chunk，让 Cursor 知道这是失败响应而不是正常结束
+                        # 关键：这样 Cursor 不会把半截内容存入历史作为"已完成"
+                        err_chunk = {
+                            "id": f"chatcmpl-{anth_state.message_id or 'err'}",
+                            "object": "chat.completion.chunk",
+                            "model": stream_resp_model or "",
+                            "choices": [{
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": "error",
+                            }],
+                            "error": {
+                                "message": f"Upstream stream interrupted: {reason}",
+                                "type": "stream_interrupted",
+                                "code": 502,
+                            },
+                        }
+                        yield f"data: {json.dumps(err_chunk, ensure_ascii=False)}\n\n"
+                        # 让 finally 自然发 [DONE] 终止 SSE 流
+                        # Cursor 会看到 finish_reason=error + error 字段，知道是失败响应
                 else:
                     # OpenRouter/OpenAI SSE 透传
                     async for line in r.aiter_lines():
@@ -860,6 +915,18 @@ async def _stream_chat(
             )
             latency_ms = int((time.perf_counter() - t0) * 1000)
             full_text = "".join(parts)
+            # 检测疑似"上下文丢失"的通用开场白响应
+            if full_text and _is_suspicious_generic_response(full_text):
+                _msgs_sent = merged.get("messages") or []
+                logger.warning(
+                    "suspicious_generic_response session=%s msgs_count=%d "
+                    "text_head=%r last_user_msg_head=%r",
+                    session_external,
+                    len(_msgs_sent),
+                    full_text[:200],
+                    (str(_msgs_sent[-1].get("content", ""))[:200]
+                     if _msgs_sent and isinstance(_msgs_sent[-1], dict) else ""),
+                )
             tclist = tool_calls_list(tool_bucket)
             msg: dict[str, Any] = {"role": "assistant"}
             if full_text:
