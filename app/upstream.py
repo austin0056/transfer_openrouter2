@@ -531,10 +531,12 @@ def _bridge_max_completion_tokens(body: dict[str, Any]) -> None:
 
 
 def _ensure_min_max_tokens(body: dict[str, Any]) -> None:
-    """设置合理的 max_tokens，Anthropic 要求必传且 input+output ≤ context limit。"""
+    """设置合理的 max_tokens，Anthropic 要求必传；尊重客户端设置。"""
     body.pop("max_completion_tokens", None)
-    # Anthropic 模型要求 max_tokens 必传；设 64000 留足输出空间且不会撞 1M 上限
-    body["max_tokens"] = 64000
+    # 尊重客户端的 max_tokens；只在客户端没设或设得过小时补默认
+    mt = body.get("max_tokens")
+    if mt is None or (isinstance(mt, int) and mt < 4096):
+        body["max_tokens"] = 64000
 
 
 # OpenAI / OpenRouter 已知接受的顶层字段白名单
@@ -657,7 +659,67 @@ def _sort_tools(body: dict[str, Any]) -> None:
         pass  # 排序失败不影响功能
 
 
-_MAX_CONVERSATION_MESSAGES = 80  # 超过此数量则丢弃最旧的轮次
+# Opus 1M context vs Sonnet 200K context
+_MAX_MESSAGES_OPUS = 500   # 1M context 模型
+_MAX_MESSAGES_SONNET = 150  # 200K context 模型
+_MAX_MESSAGES_DEFAULT = 150
+
+
+def _get_max_messages_for_model(model: str) -> int:
+    m = (model or "").lower()
+    if "opus" in m:
+        return _MAX_MESSAGES_OPUS
+    if "sonnet" in m:
+        return _MAX_MESSAGES_SONNET
+    return _MAX_MESSAGES_DEFAULT
+
+# 含这些关键字的 assistant 消息不截断（保留完整的 todo / plan / 进度信息）
+_PROGRESS_KEYWORDS = (
+    "todo", "TODO", "Todo",
+    "plan", "Plan", "PLAN",
+    "step", "Step", "STEP",
+    "progress", "Progress",
+    "完成", "计划", "步骤",
+    "- [ ]", "- [x]", "- [X]",
+    "## ", "### ",
+)
+
+
+def _contains_progress_info(text: str) -> bool:
+    """检测文本是否包含 todo/plan/进度关键字。"""
+    if not isinstance(text, str):
+        return False
+    return any(kw in text for kw in _PROGRESS_KEYWORDS)
+
+
+def _message_has_progress(msg: dict[str, Any]) -> bool:
+    """检测 assistant 消息是否包含进度/计划信息。"""
+    c = msg.get("content")
+    if isinstance(c, str) and _contains_progress_info(c):
+        return True
+    if isinstance(c, list):
+        for block in c:
+            if isinstance(block, dict) and block.get("type") == "text":
+                if _contains_progress_info(block.get("text", "")):
+                    return True
+    # 带 TodoWrite / update_plan 等 tool_calls 的消息也视为进度信息
+    tcs = msg.get("tool_calls")
+    if isinstance(tcs, list):
+        for tc in tcs:
+            if isinstance(tc, dict):
+                fn = tc.get("function")
+                if isinstance(fn, dict):
+                    fn_name = (fn.get("name") or "").lower()
+                    if any(k in fn_name for k in ("todo", "plan", "task")):
+                        return True
+    # Anthropic 原生格式的 tool_use block 也检查
+    if isinstance(c, list):
+        for block in c:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                name = (block.get("name") or "").lower()
+                if any(k in name for k in ("todo", "plan", "task")):
+                    return True
+    return False
 
 
 def _is_tool_result_only(msg: Any) -> bool:
@@ -703,8 +765,14 @@ def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
         )
     ]
 
-    # ── 第一步：消息数量硬限制 ──
-    if len(msgs) > _MAX_CONVERSATION_MESSAGES:
+    # ── 第一步：消息数量硬限制（按模型能力区分）──
+    if settings.upstream_provider == "anthropic":
+        target_model = settings.anthropic_model
+    else:
+        target_model = settings.upstream_model
+    max_msgs = _get_max_messages_for_model(target_model)
+
+    if len(msgs) > max_msgs:
         # 保留第一条（system）+ 最近的消息
         system_msgs = []
         rest = msgs
@@ -713,7 +781,7 @@ def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
             rest = msgs[1:]
 
         # 保留最后 N 条
-        keep = rest[-(_MAX_CONVERSATION_MESSAGES - len(system_msgs)):]
+        keep = rest[-(max_msgs - len(system_msgs)):]
 
         # 关键：Anthropic 要求对话必须从 user 开始
         # 从后向前找最后一条 user 消息之前的所有 user 位置，
@@ -775,6 +843,9 @@ def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
             elif isinstance(c, str) and len(c) > assistant_max:
                 m["content"] = c[:assistant_max] + f"\n\n[...truncated, original {len(c)} chars]"
         elif role == "assistant":
+            # 含进度/todo/plan 信息的 assistant 消息保留完整，防止模型失忆重启
+            if _message_has_progress(m):
+                continue
             c = m.get("content")
             if isinstance(c, str) and len(c) > assistant_max:
                 m["content"] = c[:assistant_max] + f"\n\n[...truncated, original {len(c)} chars]"
@@ -803,7 +874,9 @@ def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) 
     body = _shallow_body_copy(client_body)
     _adapt_openai_body_for_upstream(body, settings)
     _inject_identity_prompt(body, settings)
-    _inject_efficiency_prompt(body, settings)
+    # Anthropic 原生通道不注入效率 prompt — 避免干扰模型的 agent 行为
+    if settings.upstream_provider != "anthropic":
+        _inject_efficiency_prompt(body, settings)
     _sort_tools(body)
     _compress_old_messages(body, settings)
 
@@ -959,9 +1032,17 @@ def _build_anthropic_body(body: dict[str, Any], settings: Settings) -> dict[str,
         fn = tc.get("function", {})
         out["tool_choice"] = {"type": "tool", "name": fn.get("name", "")}
 
-    # max_tokens 必传
+    # max_tokens 必传；按模型能力给出合理默认
+    # Opus 4.6 支持 32K 输出，Sonnet 4.5 支持 64K 输出
     mt = body.get("max_tokens")
-    out["max_tokens"] = int(mt) if mt else 64000
+    if mt:
+        out["max_tokens"] = int(mt)
+    else:
+        model_lower = (settings.anthropic_model or "").lower()
+        if "opus" in model_lower:
+            out["max_tokens"] = 32000
+        else:
+            out["max_tokens"] = 64000
 
     # stream
     if body.get("stream"):
@@ -1195,10 +1276,15 @@ def openrouter_headers(settings: Settings) -> dict[str, str]:
 
 
 def anthropic_headers(settings: Settings) -> dict[str, str]:
+    # beta 组合：prompt-caching 通用；context-1m 仅 Opus 有效
+    beta_flags = ["prompt-caching-2024-07-31"]
+    model_lower = (settings.anthropic_model or "").lower()
+    if "opus" in model_lower:
+        beta_flags.append("context-1m-2025-08-07")
     return {
         "x-api-key": settings.anthropic_api_key,
         "anthropic-version": settings.anthropic_version,
-        "anthropic-beta": "prompt-caching-2024-07-31",
+        "anthropic-beta": ",".join(beta_flags),
         "content-type": "application/json",
     }
 
