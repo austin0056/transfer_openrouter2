@@ -289,6 +289,18 @@ _ADMIN_HTML = """<!DOCTYPE html>
           <div class="field-head"><span class="field-title">API Version</span><span class="field-key">anthropic_version</span></div>
           <input type="text" name="anthropic_version" placeholder="2023-06-01"/>
         </div>
+        <div class="checks" style="margin-top:12px">
+          <div class="check-item">
+            <label><input type="checkbox" name="thinking_enabled" checked/>
+              <span><span class="t">扩展思考</span><span class="field-key" style="display:inline;margin-left:6px">thinking_enabled</span>
+              <span class="d">开启后模型在回答前深度推理，显著提升代码理解和架构决策质量。</span></span>
+            </label>
+          </div>
+        </div>
+        <div class="field" style="margin-top:10px">
+          <div class="field-head"><span class="field-title">思考预算 (tokens)</span><span class="field-key">thinking_budget_tokens</span></div>
+          <input type="number" name="thinking_budget_tokens" placeholder="10000"/>
+        </div>
       </div>
     </div>
 

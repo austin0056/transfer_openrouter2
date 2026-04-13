@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-opus-4-20250514"
     anthropic_version: str = "2023-06-01"
 
+    # 扩展思考：让模型在回答前做深度推理（显著提升智力）
+    thinking_enabled: bool = True
+    thinking_budget_tokens: int = 10000
+
     loose_tools_passthrough: bool = False
     log_chat_metadata: bool = False
 

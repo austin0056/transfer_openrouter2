@@ -1033,26 +1033,38 @@ def _build_anthropic_body(body: dict[str, Any], settings: Settings) -> dict[str,
         out["tool_choice"] = {"type": "tool", "name": fn.get("name", "")}
 
     # max_tokens 必传；按模型能力给出合理默认
-    # Opus 4.6 支持 32K 输出，Sonnet 4.5 支持 64K 输出
+    model_lower = (settings.anthropic_model or "").lower()
     mt = body.get("max_tokens")
     if mt:
         out["max_tokens"] = int(mt)
     else:
-        model_lower = (settings.anthropic_model or "").lower()
         if "opus" in model_lower:
             out["max_tokens"] = 32000
         else:
             out["max_tokens"] = 64000
 
+    # 扩展思考（extended thinking）— 显著提升推理能力
+    if settings.thinking_enabled:
+        budget = settings.thinking_budget_tokens or 10000
+        out["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        # Anthropic 要求：开启 thinking 时 temperature 必须为 1（或不设）
+        out.pop("temperature", None)
+
     # stream
     if body.get("stream"):
         out["stream"] = True
 
-    # temperature, top_p
-    for k in ("temperature", "top_p"):
-        v = body.get(k)
-        if v is not None:
-            out[k] = v
+    # temperature, top_p（thinking 模式下 temperature 已移除）
+    if "thinking" not in out:
+        for k in ("temperature", "top_p"):
+            v = body.get(k)
+            if v is not None:
+                out[k] = v
+    else:
+        # thinking 模式只允许 top_p
+        tp = body.get("top_p")
+        if tp is not None:
+            out["top_p"] = tp
 
     # 历史消息 cache breakpoint（倒数第二条 user 消息）
     if settings.cache_enabled and len(anthropic_msgs) >= 3:
@@ -1276,8 +1288,12 @@ def openrouter_headers(settings: Settings) -> dict[str, str]:
 
 
 def anthropic_headers(settings: Settings) -> dict[str, str]:
-    # beta 组合：prompt-caching 通用；context-1m 仅 Opus 有效
-    beta_flags = ["prompt-caching-2024-07-31"]
+    beta_flags = [
+        "prompt-caching-2024-07-31",
+        "interleaved-thinking-2025-05-14",     # 允许 tool_call 之间思考
+        "fine-grained-tool-streaming-2025-05-14",  # 边生成边流 tool 参数
+        "token-efficient-tools-2025-02-19",    # 紧凑 tool schema 省 ~14% token
+    ]
     model_lower = (settings.anthropic_model or "").lower()
     if "opus" in model_lower:
         beta_flags.append("context-1m-2025-08-07")
