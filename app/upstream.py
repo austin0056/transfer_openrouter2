@@ -1032,16 +1032,17 @@ def _build_anthropic_body(body: dict[str, Any], settings: Settings) -> dict[str,
         fn = tc.get("function", {})
         out["tool_choice"] = {"type": "tool", "name": fn.get("name", "")}
 
-    # max_tokens 必传；按模型能力给出合理默认
+    # max_tokens 必传；按模型最大能力给出默认
     model_lower = (settings.anthropic_model or "").lower()
     mt = body.get("max_tokens")
     if mt:
         out["max_tokens"] = int(mt)
     else:
+        # Opus 4.6 支持 1M output；Sonnet 4.5 支持 128K (with beta)
         if "opus" in model_lower:
-            out["max_tokens"] = 32000
+            out["max_tokens"] = 128000
         else:
-            out["max_tokens"] = 64000
+            out["max_tokens"] = 128000
 
     # 扩展思考（extended thinking）— 显著提升推理能力
     if settings.thinking_enabled:
@@ -1293,6 +1294,7 @@ def anthropic_headers(settings: Settings) -> dict[str, str]:
         "interleaved-thinking-2025-05-14",     # 允许 tool_call 之间思考
         "fine-grained-tool-streaming-2025-05-14",  # 边生成边流 tool 参数
         "token-efficient-tools-2025-02-19",    # 紧凑 tool schema 省 ~14% token
+        "output-128k-2025-02-19",              # 解锁 128K 输出上限
     ]
     model_lower = (settings.anthropic_model or "").lower()
     if "opus" in model_lower:
