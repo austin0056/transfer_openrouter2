@@ -929,9 +929,77 @@ def _shallow_body_copy(src: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
+def _parse_string_json_field(body: dict[str, Any], key: str) -> None:
+    """部分代理把 messages/tools 以 JSON 字符串形式放在 body 里。"""
+    val = body.get(key)
+    if not isinstance(val, str):
+        return
+    s = val.strip()
+    if len(s) < 2 or s[0] not in "[{":
+        return
+    try:
+        body[key] = json.loads(s)
+    except json.JSONDecodeError:
+        pass
+
+
+def _lift_nested_chat_fields(body: dict[str, Any]) -> None:
+    """部分网关/客户端把字段包在 request、data、payload 等嵌套对象中。"""
+    m = body.get("messages")
+    if isinstance(m, list) and len(m) > 0:
+        return
+    if isinstance(m, str) and m.strip():
+        return
+    for k in ("request", "body", "payload", "data", "params", "json"):
+        inner = body.get(k)
+        if not isinstance(inner, dict):
+            continue
+        if inner.get("messages") is None and inner.get("input") is None:
+            continue
+        if inner.get("messages") is not None:
+            body["messages"] = inner["messages"]
+        for fld in (
+            "model", "stream", "tools", "tool_choice", "temperature",
+            "top_p", "max_tokens", "max_completion_tokens", "n", "stop",
+            "input", "contents", "prompt", "user", "response_format",
+            "parallel_tool_calls",
+        ):
+            if fld not in inner:
+                continue
+            cur = body.get(fld)
+            if cur is None or cur == "" or cur == []:
+                body[fld] = inner[fld]
+        return
+
+
+def _aliases_message_model_keys(body: dict[str, Any]) -> None:
+    for alt in ("Messages", "MESSAGES"):
+        if body.get("messages") is None and alt in body:
+            body["messages"] = body.pop(alt)
+            break
+    if body.get("model") is None and "Model" in body:
+        body["model"] = body.pop("Model")
+
+
+def _refresh_message_list_shallow_clone(body: dict[str, Any]) -> None:
+    msgs = body.get("messages")
+    if isinstance(msgs, list):
+        body["messages"] = [dict(m) if isinstance(m, dict) else m for m in msgs]
+
+
+def _coerce_raw_chat_request(body: dict[str, Any]) -> None:
+    """在清洗逻辑之前统一原始 body 形态（字符串 JSON、嵌套、别名键）。"""
+    _aliases_message_model_keys(body)
+    _lift_nested_chat_fields(body)
+    for key in ("messages", "tools", "input"):
+        _parse_string_json_field(body, key)
+    _refresh_message_list_shallow_clone(body)
+
+
 def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) -> dict[str, Any]:
     """根据 upstream_provider 构建请求体。"""
     body = _shallow_body_copy(client_body)
+    _coerce_raw_chat_request(body)
     _adapt_openai_body_for_upstream(body, settings)
     if settings.upstream_provider != "anthropic":
         # OpenRouter 路径：可选注入 identity/efficiency prompt

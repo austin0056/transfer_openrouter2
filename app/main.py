@@ -31,6 +31,7 @@ from app.sse_stream import (
 )
 from app.storage import EmbedJob, PersistJob, create_pool, persistence_schema_ready, persist_worker
 from app.upstream import (
+    _coerce_raw_chat_request,
     anthropic_response_to_openai,
     build_executor_body,
     build_planner_body,
@@ -163,6 +164,23 @@ async def limit_request_body(request: Request, call_next):
 
 
 app.include_router(admin_router, prefix="/admin")
+
+
+@app.get("/")
+async def root() -> dict[str, Any]:
+    """根路径说明（探活/人工访问）；API 仍以 /v1、/health、/admin 为准。"""
+    return {
+        "service": "openrouter-openai-gateway",
+        "health": "/health",
+        "admin": "/admin/",
+        "openai_compatible": "/v1/models",
+    }
+
+
+@app.get("/favicon.ico")
+async def favicon() -> Response:
+    """避免浏览器默认请求产生无意义 404 日志。"""
+    return Response(status_code=204)
 
 
 @app.get("/health")
@@ -321,8 +339,18 @@ async def chat_completions(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="OPENROUTER_API_KEY is not configured",
             )
+    # 尽早统一 body 形态，便于日志与后续清洗一致（嵌套 request/data、JSON 字符串 messages 等）
+    _coerce_raw_chat_request(body)
     # 调试：记录清洗前的原始 messages 结构（含 content block 详细信息）
     if settings.log_chat_metadata:
+        _rm = body.get("messages")
+        if not isinstance(_rm, list) or len(_rm) == 0:
+            logger.info(
+                "chat_body_diag session=%s top_keys=%s messages_type=%s",
+                session_external,
+                sorted(body.keys()),
+                type(_rm).__name__,
+            )
         _raw_msgs = body.get("messages") or []
         raw_summary = []
         for i, _m in enumerate(_raw_msgs):
