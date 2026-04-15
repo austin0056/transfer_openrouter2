@@ -312,6 +312,24 @@ async def chat_completions(
             raw_summary.append(f"{i}:{r}({c_type},{c_len}){blocks_info}")
         logger.info("chat_raw_messages session=%s raw=[%s]", session_external, " ".join(raw_summary))
 
+        # 记录 system prompt 头部 + 工具名列表，帮助诊断"模型不知道能做什么"问题
+        _sys_head = ""
+        for _m in _raw_msgs:
+            if isinstance(_m, dict) and _m.get("role") == "system":
+                c = _m.get("content", "")
+                _sys_head = (c[:500] if isinstance(c, str) else str(c)[:500])
+                break
+        _tool_names = []
+        _raw_tools = body.get("tools") or []
+        for _t in _raw_tools[:30]:
+            if isinstance(_t, dict):
+                fn = _t.get("function", {})
+                _tool_names.append(fn.get("name", "?"))
+        logger.info(
+            "chat_context session=%s system_head=%r tools=[%s]",
+            session_external, _sys_head[:300], ",".join(_tool_names),
+        )
+
     merged = merge_chat_completion_body(body, settings)
     url = get_upstream_url(settings)
     headers = get_upstream_headers(settings)
