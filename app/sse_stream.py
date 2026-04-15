@@ -49,9 +49,24 @@ def accumulate_delta(chunk: dict[str, Any], parts: list[str]) -> None:
                         parts.append(t)
 
 
-def apply_tool_call_delta(bucket: dict[int, dict[str, Any]], tc: dict[str, Any]) -> None:
+def apply_tool_call_delta(
+    bucket: dict[int, dict[str, Any]],
+    tc: dict[str, Any],
+    *,
+    id_to_index: dict[str, int] | None = None,
+) -> None:
     """Merge one streaming tool_call fragment (OpenAI format, keyed by index)."""
-    idx = _coerce_tool_index(tc.get("index"))
+    idx_raw = tc.get("index")
+    if idx_raw is None and id_to_index is not None:
+        tid = tc.get("id")
+        if isinstance(tid, str) and tid.strip():
+            if tid not in id_to_index:
+                id_to_index[tid] = len(id_to_index)
+            idx = id_to_index[tid]
+        else:
+            idx = _coerce_tool_index(idx_raw)
+    else:
+        idx = _coerce_tool_index(idx_raw)
     cur = bucket.setdefault(
         idx,
         {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
@@ -70,7 +85,11 @@ def apply_tool_call_delta(bucket: dict[int, dict[str, Any]], tc: dict[str, Any])
             )
 
 
-def accumulate_tool_calls(chunk: dict[str, Any], bucket: dict[int, dict[str, Any]]) -> None:
+def accumulate_tool_calls(
+    chunk: dict[str, Any],
+    bucket: dict[int, dict[str, Any]],
+    id_to_index: dict[str, int] | None = None,
+) -> None:
     choices = chunk.get("choices") or []
     for ch in choices:
         delta = ch.get("delta") or {}
@@ -79,7 +98,7 @@ def accumulate_tool_calls(chunk: dict[str, Any], bucket: dict[int, dict[str, Any
             continue
         for tc in tcs:
             if isinstance(tc, dict):
-                apply_tool_call_delta(bucket, tc)
+                apply_tool_call_delta(bucket, tc, id_to_index=id_to_index)
 
 
 def tool_calls_list(bucket: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -95,12 +114,19 @@ def extract_usage(chunk: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+_FINISH_REASON_ALIASES = {
+    "tool_use": "tool_calls",
+    "function_call": "tool_calls",
+}
+
+
 def finish_reason_from_chunk(chunk: dict[str, Any]) -> str | None:
     choices = chunk.get("choices") or []
     for ch in choices:
         fr = ch.get("finish_reason")
         if fr is not None:
-            return str(fr)
+            s = str(fr)
+            return _FINISH_REASON_ALIASES.get(s, s)
     return None
 
 

@@ -245,18 +245,23 @@ _ADMIN_HTML = """<!DOCTYPE html>
         <div class="field-head"><span class="field-title">供应商协议</span><span class="field-key">upstream_provider</span></div>
         <select name="upstream_provider" id="upstreamProvider">
           <option value="openrouter">OpenRouter (OpenAI 兼容)</option>
+          <option value="gemini">Gemini (OpenAI 兼容)</option>
           <option value="anthropic">Anthropic 原生直连</option>
         </select>
+      </div>
+
+      <div id="sharedUpstreamModelField">
+        <div class="field">
+          <div class="field-head"><span class="field-title">主模型 ID</span><span class="field-key">upstream_model</span></div>
+          <p class="field-desc">OpenRouter 与 Gemini 线路共用此字段；Anthropic 请使用下方专用模型名。</p>
+          <input type="text" name="upstream_model" id="upstreamModelInput" placeholder="anthropic/claude-opus-4.6 或 gemini-…"/>
+        </div>
       </div>
 
       <div id="openrouterFields">
         <div class="field">
           <div class="field-head"><span class="field-title">OpenRouter API Key</span><span class="field-key">openrouter_api_key</span></div>
           <input type="password" name="openrouter_api_key" autocomplete="off" placeholder="sk-or-v1-..."/>
-        </div>
-        <div class="field">
-          <div class="field-head"><span class="field-title">模型 ID</span><span class="field-key">upstream_model</span></div>
-          <input type="text" name="upstream_model" placeholder="anthropic/claude-opus-4.6"/>
         </div>
         <div class="field">
           <div class="field-head"><span class="field-title">API 根地址</span><span class="field-key">upstream_base_url</span></div>
@@ -269,6 +274,18 @@ _ADMIN_HTML = """<!DOCTYPE html>
         <div class="field">
           <div class="field-head"><span class="field-title">X-Title（可选）</span><span class="field-key">openrouter_app_title</span></div>
           <input type="text" name="openrouter_app_title" placeholder="OpenRouter Gateway"/>
+        </div>
+      </div>
+
+      <div id="geminiFields" style="display:none">
+        <div class="field">
+          <div class="field-head"><span class="field-title">Google AI API Key</span><span class="field-key">google_api_key</span></div>
+          <p class="field-desc">Google AI Studio / Gemini API Key；请求头 <code>Authorization: Bearer</code>。</p>
+          <input type="password" name="google_api_key" autocomplete="off" placeholder="AIza…"/>
+        </div>
+        <div class="field">
+          <div class="field-head"><span class="field-title">OpenAI 兼容 Base URL</span><span class="field-key">gemini_openai_base_url</span></div>
+          <input type="text" name="gemini_openai_base_url" placeholder="https://generativelanguage.googleapis.com/v1beta/openai"/>
         </div>
       </div>
 
@@ -535,7 +552,14 @@ _ADMIN_HTML = """<!DOCTYPE html>
     function updateCursorSnippet() {
       const base = location.origin + "/v1";
       const key = $("#gatewayApiKey").value.trim() || "<your-gateway-api-key>";
-      const model = (document.querySelector('[name="upstream_model"]')?.value || "").trim() || "anthropic/claude-opus-4.6";
+      const prov = ($("#upstreamProvider") && $("#upstreamProvider").value) || "openrouter";
+      let model = "";
+      if (prov === "anthropic") {
+        model = (document.querySelector('[name="anthropic_model"]')?.value || "").trim();
+      } else {
+        model = ($("#upstreamModelInput")?.value || "").trim();
+      }
+      if (!model) model = prov === "anthropic" ? "claude-opus-4-20250514" : "anthropic/claude-opus-4.6";
       const snippet = JSON.stringify({
         "openai.com/v1": {
           "Override OpenAI Base URL": base,
@@ -546,15 +570,33 @@ _ADMIN_HTML = """<!DOCTYPE html>
       $("#cursorSnippet").textContent = "Base URL: " + base + "\\nAPI Key:  " + key + "\\nModel:    " + model;
     }
     $("#gatewayApiKey").addEventListener("input", updateCursorSnippet);
-    if (document.querySelector('[name="upstream_model"]')) {
-      document.querySelector('[name="upstream_model"]').addEventListener("input", updateCursorSnippet);
-    }
+    const _um = $("#upstreamModelInput");
+    if (_um) _um.addEventListener("input", updateCursorSnippet);
+    const _am = document.querySelector('[name="anthropic_model"]');
+    if (_am) _am.addEventListener("input", updateCursorSnippet);
+    $("#upstreamProvider").addEventListener("change", updateCursorSnippet);
     setTimeout(updateCursorSnippet, 500);
+
+    function setSectionDisabled(sectionEl, disabled) {
+      if (!sectionEl) return;
+      for (const el of sectionEl.querySelectorAll("input,select,textarea,button")) {
+        el.disabled = !!disabled;
+      }
+    }
 
     function toggleProviderFields() {
       const v = $("#upstreamProvider").value;
       document.getElementById("openrouterFields").style.display = v === "openrouter" ? "" : "none";
+      document.getElementById("geminiFields").style.display = v === "gemini" ? "" : "none";
       document.getElementById("anthropicFields").style.display = v === "anthropic" ? "" : "none";
+      const shared = document.getElementById("sharedUpstreamModelField");
+      if (shared) {
+        shared.style.display = v === "openrouter" || v === "gemini" ? "" : "none";
+        setSectionDisabled(shared, v !== "openrouter" && v !== "gemini");
+      }
+      setSectionDisabled(document.getElementById("openrouterFields"), v !== "openrouter");
+      setSectionDisabled(document.getElementById("geminiFields"), v !== "gemini");
+      setSectionDisabled(document.getElementById("anthropicFields"), v !== "anthropic");
     }
     $("#upstreamProvider").addEventListener("change", toggleProviderFields);
     setTimeout(toggleProviderFields, 100);
@@ -578,12 +620,16 @@ _ADMIN_HTML = """<!DOCTYPE html>
     function fillForm(s) {
       const form = $("#cfg");
       for (const el of form.elements) {
+        if (el.name) el.disabled = false;
+      }
+      for (const el of form.elements) {
         if (!el.name) continue;
         const v = s[el.name];
         if (v === undefined || v === null) continue;
         if (el.type === "checkbox") el.checked = !!v;
         else el.value = v;
       }
+      toggleProviderFields();
     }
 
     function readForm() {
@@ -591,6 +637,7 @@ _ADMIN_HTML = """<!DOCTYPE html>
       const out = {};
       for (const el of form.elements) {
         if (!el.name) continue;
+        if (el.disabled) continue;
         if (el.type === "checkbox") {
           out[el.name] = el.checked;
         } else if (el.type === "number") {
@@ -635,7 +682,6 @@ _ADMIN_HTML = """<!DOCTYPE html>
         if (!r.ok) throw new Error(j.detail || r.statusText || "加载失败");
         fillForm(j.settings || {});
         updateCursorSnippet();
-        toggleProviderFields();
         setMsg("已加载。路径: " + (j.config_path || ""), "ok");
       } catch (e) {
         setMsg(String(e.message || e), "err");

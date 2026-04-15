@@ -868,8 +868,32 @@ def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) 
 
     if settings.upstream_provider == "anthropic":
         return _build_anthropic_body(body, settings)
-    else:
-        return _build_openrouter_body(body, settings)
+    if settings.upstream_provider == "gemini":
+        return _build_gemini_body(body, settings)
+    return _build_openrouter_body(body, settings)
+
+
+# Gemini OpenAI 兼容 API 常见最大输出上限（超过易 400）
+_GEMINI_MAX_OUTPUT_TOKENS = 65536
+
+
+def _build_gemini_body(body: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    """Google Gemini OpenAI 兼容路径：不发送 OpenRouter / Anthropic 专用字段。"""
+    body["model"] = settings.upstream_model
+    body.pop("provider", None)
+    body.pop("cache_control", None)
+    # 与 tools 同时使用 structured output 时 Gemini 常返回 400
+    if body.get("tools") and body.get("response_format") is not None:
+        body.pop("response_format", None)
+    mt = body.get("max_tokens")
+    if mt is not None:
+        try:
+            n = int(mt)
+        except (TypeError, ValueError):
+            body.pop("max_tokens", None)
+        else:
+            body["max_tokens"] = max(1, min(n, _GEMINI_MAX_OUTPUT_TOKENS))
+    return body
 
 
 def _build_openrouter_body(body: dict[str, Any], settings: Settings) -> dict[str, Any]:
@@ -1317,10 +1341,17 @@ def anthropic_headers(settings: Settings) -> dict[str, str]:
 def get_upstream_url(settings: Settings) -> str:
     if settings.upstream_provider == "anthropic":
         return f"{settings.anthropic_base_url.rstrip('/')}/v1/messages"
+    if settings.upstream_provider == "gemini":
+        return f"{settings.gemini_openai_base_url.rstrip('/')}/chat/completions"
     return f"{settings.upstream_base_url.rstrip('/')}/chat/completions"
 
 
 def get_upstream_headers(settings: Settings) -> dict[str, str]:
     if settings.upstream_provider == "anthropic":
         return anthropic_headers(settings)
+    if settings.upstream_provider == "gemini":
+        return {
+            "Authorization": f"Bearer {settings.google_api_key}",
+            "Content-Type": "application/json",
+        }
     return openrouter_headers(settings)

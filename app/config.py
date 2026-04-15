@@ -21,13 +21,16 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     gateway_api_key: str = ""
 
-    upstream_provider: str = "openrouter"  # "openrouter" | "anthropic"
+    upstream_provider: str = "openrouter"  # "openrouter" | "anthropic" | "gemini"
 
     upstream_model: str = "anthropic/claude-opus-4.6"
     upstream_base_url: str = "https://openrouter.ai/api/v1"
 
     openrouter_http_referer: str = ""
     openrouter_app_title: str = ""
+
+    google_api_key: str = ""
+    gemini_openai_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
 
     anthropic_api_key: str = ""
     anthropic_base_url: str = "https://api.anthropic.com"

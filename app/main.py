@@ -53,8 +53,15 @@ async def lifespan(app: FastAPI):
         os.environ.get("PYTHON_VERSION", ""),
     )
     settings = get_settings()
-    if not settings.openrouter_api_key.strip():
-        logger.warning("OPENROUTER_API_KEY is empty — configure via env or /admin")
+    if settings.upstream_provider == "anthropic":
+        if not settings.anthropic_api_key.strip():
+            logger.warning("ANTHROPIC_API_KEY is empty — configure via env or /admin")
+    elif settings.upstream_provider == "gemini":
+        if not settings.google_api_key.strip():
+            logger.warning("GOOGLE_API_KEY is empty — configure via env or /admin")
+    else:
+        if not settings.openrouter_api_key.strip():
+            logger.warning("OPENROUTER_API_KEY is empty — configure via env or /admin")
     if not settings.gateway_api_key.strip():
         logger.warning("GATEWAY_API_KEY is empty — configure via env or /admin")
 
@@ -177,13 +184,17 @@ async def list_models(
     models: list[dict[str, Any]] = []
     # 主模型
     mid = settings.upstream_model
+    owned_by = "openrouter"
     if settings.upstream_provider == "anthropic":
         mid = settings.anthropic_model
+        owned_by = "anthropic"
+    elif settings.upstream_provider == "gemini":
+        owned_by = "google"
     models.append({
         "id": mid,
         "object": "model",
         "created": 0,
-        "owned_by": "anthropic",
+        "owned_by": owned_by,
         "permission": [],
         "root": mid,
         "parent": None,
@@ -280,11 +291,24 @@ async def chat_completions(
     x_session_id: str | None = Header(None, alias="X-Session-Id"),
 ) -> Response:
     session_external = (x_session_id or "").strip() or str(uuid4())
-    if not settings.openrouter_api_key.strip():
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="OPENROUTER_API_KEY is not configured",
-        )
+    if settings.upstream_provider == "anthropic":
+        if not settings.anthropic_api_key.strip():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="ANTHROPIC_API_KEY is not configured",
+            )
+    elif settings.upstream_provider == "gemini":
+        if not settings.google_api_key.strip():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="GOOGLE_API_KEY is not configured",
+            )
+    else:
+        if not settings.openrouter_api_key.strip():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="OPENROUTER_API_KEY is not configured",
+            )
     # 调试：记录清洗前的原始 messages 结构（含 content block 详细信息）
     if settings.log_chat_metadata:
         _raw_msgs = body.get("messages") or []
@@ -384,8 +408,12 @@ async def chat_completions(
     t0 = time.perf_counter()
 
     if stream:
-        # 双模型协同：Opus 规划 + Qwen 执行
-        if settings.dual_model_enabled and merged.get("tools") and not is_anthropic:
+        # 双模型协同：Opus 规划 + Qwen 执行（仅 OpenRouter 上游）
+        if (
+            settings.dual_model_enabled
+            and merged.get("tools")
+            and settings.upstream_provider == "openrouter"
+        ):
             return await _dual_model_stream(
                 request, client, url, headers, merged,
                 session_external, t0, settings,
@@ -717,6 +745,7 @@ async def _stream_chat(
         upstream_ok = False
         got_done = False
         tool_bucket: dict[int, dict[str, Any]] = {}
+        tool_call_id_to_index: dict[str, int] = {}
         last_finish: str | None = None
         try:
             async with client.stream("POST", url, headers=headers, json=merged) as r:
@@ -903,7 +932,7 @@ async def _stream_chat(
                             if isinstance(m, str) and m:
                                 stream_resp_model = m
                         accumulate_delta(parsed, parts)
-                        accumulate_tool_calls(parsed, tool_bucket)
+                        accumulate_tool_calls(parsed, tool_bucket, tool_call_id_to_index)
                         fr = finish_reason_from_chunk(parsed)
                         if fr:
                             last_finish = fr
