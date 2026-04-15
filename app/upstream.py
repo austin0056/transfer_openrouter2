@@ -1053,6 +1053,19 @@ def _build_anthropic_body(body: dict[str, Any], settings: Settings) -> dict[str,
         if tp is not None:
             out["top_p"] = tp
 
+    # stop_sequences 透传（OpenAI: stop → Anthropic: stop_sequences）
+    stop = body.get("stop")
+    if stop:
+        if isinstance(stop, str):
+            out["stop_sequences"] = [stop]
+        elif isinstance(stop, list):
+            out["stop_sequences"] = stop
+
+    # metadata 透传
+    meta = body.get("metadata")
+    if isinstance(meta, dict):
+        out["metadata"] = meta
+
     # 历史消息 cache breakpoint（倒数第二条 user 消息）
     if settings.cache_enabled and len(anthropic_msgs) >= 3:
         user_indices = [i for i, m in enumerate(anthropic_msgs) if m.get("role") == "user"]
@@ -1070,6 +1083,7 @@ def _build_anthropic_body(body: dict[str, Any], settings: Settings) -> dict[str,
 def anthropic_response_to_openai(resp: dict[str, Any]) -> dict[str, Any]:
     """Anthropic Messages API 响应 → OpenAI chat.completion 格式。"""
     content_blocks = resp.get("content") or []
+    thinking_parts: list[str] = []
     text_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
     tc_index = 0
@@ -1077,11 +1091,16 @@ def anthropic_response_to_openai(resp: dict[str, Any]) -> dict[str, Any]:
     for block in content_blocks:
         if not isinstance(block, dict):
             continue
-        if block.get("type") == "text":
+        btype = block.get("type", "")
+        if btype == "thinking":
+            t = block.get("thinking", "")
+            if t:
+                thinking_parts.append(t)
+        elif btype == "text":
             t = block.get("text", "")
             if t:
                 text_parts.append(t)
-        elif block.get("type") == "tool_use":
+        elif btype == "tool_use":
             inp = block.get("input", {})
             tool_calls.append({
                 "id": block.get("id", ""),
@@ -1095,7 +1114,9 @@ def anthropic_response_to_openai(resp: dict[str, Any]) -> dict[str, Any]:
             tc_index += 1
 
     msg: dict[str, Any] = {"role": "assistant"}
-    msg["content"] = "\n".join(text_parts) if text_parts else None
+    # 合并 thinking + text（thinking 放前面，Cursor 能看到推理过程）
+    all_parts = thinking_parts + text_parts
+    msg["content"] = "\n".join(all_parts) if all_parts else None
     if tool_calls:
         msg["tool_calls"] = tool_calls
 

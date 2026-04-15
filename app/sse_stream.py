@@ -228,8 +228,8 @@ def anthropic_event_to_openai_chunk(
             })
             return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
-        if state.current_block_type == "text":
-            # 第一个 text block 发送 role
+        if state.current_block_type in ("text", "thinking"):
+            # text 或 thinking block 开始 — 发送 role
             chunk = _make_openai_chunk(state, delta={"role": "assistant", "content": ""})
             return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
@@ -256,8 +256,17 @@ def anthropic_event_to_openai_chunk(
                 })
                 return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
-        elif delta_type in ("thinking_delta", "signature_delta"):
-            # 扩展思考模式：不输出给客户端但也不报错，保持流继续
+        elif delta_type == "thinking_delta":
+            # 扩展思考：流式输出给客户端，Cursor 能看到推理过程
+            thinking_text = delta.get("thinking", "")
+            if thinking_text:
+                state.text_parts.append(thinking_text)
+                chunk = _make_openai_chunk(state, delta={"content": thinking_text})
+                return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            return None
+
+        elif delta_type == "signature_delta":
+            # 思考签名，跳过
             return None
 
         return None
