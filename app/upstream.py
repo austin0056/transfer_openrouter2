@@ -805,9 +805,9 @@ def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
         msgs = system_msgs + keep
         body["messages"] = msgs
 
-    # ── 第二步：内容截断 ──
+    # ── 第二步：仅截断旧的 tool/user 大内容（文件内容等） ──
+    # assistant 消息永不截断 — 这是模型的推理链，截断等于切断大脑
     tool_max = settings.tool_result_max_chars
-    assistant_max = 1500
     keep_recent = settings.tool_result_keep_recent_turns
 
     assistant_indices = [i for i, m in enumerate(msgs)
@@ -829,7 +829,6 @@ def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
             if isinstance(c, str) and len(c) > tool_max:
                 m["content"] = c[:tool_max] + f"\n\n[...truncated, original {len(c)} chars]"
         elif role == "user":
-            # 也截断旧的 user 长消息中的 content blocks
             c = m.get("content")
             if isinstance(c, list):
                 for block in c:
@@ -840,21 +839,7 @@ def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
                                 block["text"] = txt[:tool_max] + f"\n[...truncated]"
                             elif "content" in block:
                                 block["content"] = txt[:tool_max] + f"\n[...truncated]"
-            elif isinstance(c, str) and len(c) > assistant_max:
-                m["content"] = c[:assistant_max] + f"\n\n[...truncated, original {len(c)} chars]"
-        elif role == "assistant":
-            # 含进度/todo/plan 信息的 assistant 消息保留完整，防止模型失忆重启
-            if _message_has_progress(m):
-                continue
-            c = m.get("content")
-            if isinstance(c, str) and len(c) > assistant_max:
-                m["content"] = c[:assistant_max] + f"\n\n[...truncated, original {len(c)} chars]"
-            elif isinstance(c, list):
-                for block in c:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        txt = block.get("text", "")
-                        if isinstance(txt, str) and len(txt) > assistant_max:
-                            block["text"] = txt[:assistant_max] + f"\n\n[...truncated]"
+        # assistant 消息保持完整 — 不截断推理链
 
 
 def _shallow_body_copy(src: dict[str, Any]) -> dict[str, Any]:
@@ -873,11 +858,12 @@ def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) 
     """根据 upstream_provider 构建请求体。"""
     body = _shallow_body_copy(client_body)
     _adapt_openai_body_for_upstream(body, settings)
-    _inject_identity_prompt(body, settings)
-    # Anthropic 原生通道不注入效率 prompt — 避免干扰模型的 agent 行为
     if settings.upstream_provider != "anthropic":
+        # OpenRouter 路径：可选注入 identity/efficiency prompt
+        _inject_identity_prompt(body, settings)
         _inject_efficiency_prompt(body, settings)
-    _sort_tools(body)
+        _sort_tools(body)
+    # Anthropic 原生通道：零注入零修改，保持模型原始智力
     _compress_old_messages(body, settings)
 
     if settings.upstream_provider == "anthropic":
