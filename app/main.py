@@ -176,13 +176,8 @@ async def head_v1_root() -> Response:
     return Response(status_code=204)
 
 
-@app.get("/v1/models")
-async def list_models(
-    _: None = Depends(verify_gateway_key),
-    settings: Settings = Depends(get_settings),
-) -> dict[str, Any]:
+def _openai_models_payload(settings: Settings) -> dict[str, Any]:
     models: list[dict[str, Any]] = []
-    # 主模型
     mid = settings.upstream_model
     owned_by = "openrouter"
     if settings.upstream_provider == "anthropic":
@@ -201,7 +196,6 @@ async def list_models(
         "context_length": 200000,
         "capabilities": {"vision": True, "function_calling": True},
     })
-    # 双模型混合
     if settings.dual_model_enabled and settings.dual_model_name:
         models.append({
             "id": settings.dual_model_name,
@@ -218,6 +212,23 @@ async def list_models(
         "object": "list",
         "data": models,
     }
+
+
+@app.get("/v1/models")
+async def list_models(
+    _: None = Depends(verify_gateway_key),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    return _openai_models_payload(settings)
+
+
+@app.get("/v1/v1/models")
+async def list_models_double_v1_prefix(
+    _: None = Depends(verify_gateway_key),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    """客户端把 Base URL 配成 `.../v1` 时会请求 `/v1/v1/models`；与此兼容。"""
+    return _openai_models_payload(settings)
 
 
 # 疑似"丢失上下文"的通用开场白响应模式
@@ -283,6 +294,7 @@ def _log_chat_upstream_meta(
 
 
 @app.post("/v1/chat/completions")
+@app.post("/v1/v1/chat/completions")
 async def chat_completions(
     request: Request,
     body: dict[str, Any] = Body(...),
@@ -355,6 +367,17 @@ async def chat_completions(
         )
 
     merged = merge_chat_completion_body(body, settings)
+    _merged_msgs = merged.get("messages")
+    if not isinstance(_merged_msgs, list) or len(_merged_msgs) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "规范化后 messages 为空，无法转发上游。请检查请求体是否包含非空的 messages，"
+                "或兼容字段 input / contents / prompt。"
+                "若使用 Cursor：OpenAI Base URL 应为主机根路径 + /v1（只出现一次 /v1），"
+                "例如 https://你的网关/v1 而非 https://你的网关/v1/v1。"
+            ),
+        )
     url = get_upstream_url(settings)
     headers = get_upstream_headers(settings)
     client: httpx.AsyncClient = request.app.state.http_client

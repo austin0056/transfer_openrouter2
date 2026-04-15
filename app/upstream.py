@@ -309,8 +309,82 @@ def _convert_anthropic_content_blocks(body: dict[str, Any]) -> None:
     body["messages"] = converted
 
 
+def _gemini_contents_to_messages(contents: Any) -> list[dict[str, Any]] | None:
+    """Gemini/Vertex 原生 contents → OpenAI messages（供误用字段或中间层透传）。"""
+    if not isinstance(contents, list) or not contents:
+        return None
+    out: list[dict[str, Any]] = []
+    for c in contents:
+        if not isinstance(c, dict):
+            continue
+        role = str(c.get("role") or "user").lower()
+        if role == "model":
+            role = "assistant"
+        parts = c.get("parts")
+        if isinstance(parts, list):
+            text_chunks: list[str] = []
+            for p in parts:
+                if isinstance(p, dict):
+                    t = p.get("text")
+                    if isinstance(t, str) and t.strip():
+                        text_chunks.append(t)
+            if text_chunks:
+                out.append({"role": role, "content": "\n".join(text_chunks)})
+        elif isinstance(c.get("text"), str) and c["text"].strip():
+            out.append({"role": role, "content": c["text"]})
+    return out if out else None
+
+
+def _hoist_alternate_inputs_to_messages(body: dict[str, Any]) -> None:
+    """若 messages 缺失或为空，从 input / contents / prompt 等字段恢复（兼容 Responses API 与 Gemini 负载）。"""
+    msgs = body.get("messages")
+    if isinstance(msgs, list) and len(msgs) > 0:
+        return
+
+    inp = body.get("input")
+    if isinstance(inp, str) and inp.strip():
+        body["messages"] = [{"role": "user", "content": inp.strip()}]
+        return
+    if isinstance(inp, list) and inp:
+        new_msgs: list[dict[str, Any]] = []
+        for item in inp:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "message":
+                role = str(item.get("role") or "user").lower()
+                new_msgs.append({"role": role, "content": item.get("content")})
+            elif "role" in item:
+                role = str(item.get("role") or "user").lower()
+                new_msgs.append({"role": role, "content": item.get("content")})
+        if new_msgs:
+            body["messages"] = new_msgs
+            return
+
+    conv = _gemini_contents_to_messages(body.get("contents"))
+    if conv:
+        body["messages"] = conv
+        return
+
+    pr = body.get("prompt")
+    if isinstance(pr, str) and pr.strip():
+        body["messages"] = [{"role": "user", "content": pr.strip()}]
+
+
+def _normalize_message_roles(body: dict[str, Any]) -> None:
+    msgs = body.get("messages")
+    if not isinstance(msgs, list):
+        return
+    for m in msgs:
+        if isinstance(m, dict):
+            r = m.get("role")
+            if isinstance(r, str):
+                m["role"] = r.lower()
+
+
 def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) -> None:
     """转换层：兼容分发/客户端脏负载，上游无需、分发侧也无需改代码。"""
+    _hoist_alternate_inputs_to_messages(body)
+    _normalize_message_roles(body)
     _convert_top_level_system(body)
     _convert_anthropic_content_blocks(body)
     allowed: set[str] = set()
@@ -407,7 +481,7 @@ def _adapt_openai_body_for_upstream(body: dict[str, Any], settings: Settings) ->
                 for block in c:
                     if isinstance(block, dict):
                         btype = block.get("type", "text")
-                        if btype == "text":
+                        if btype in ("text", "input_text", "text_input"):
                             txt = block.get("text")
                             if isinstance(txt, str) and txt.strip():
                                 good_blocks.append(block)
@@ -487,7 +561,7 @@ def _sanitize_content(content: Any) -> Any:
         for block in content:
             if isinstance(block, dict):
                 btype = block.get("type", "text")
-                if btype == "text":
+                if btype in ("text", "input_text", "text_input"):
                     txt = block.get("text")
                     if isinstance(txt, str) and txt.strip():
                         good.append(_normalize_content_block(block))
@@ -787,13 +861,14 @@ def _compress_old_messages(body: dict[str, Any], settings: Settings) -> None:
         # 从后向前找最后一条 user 消息之前的所有 user 位置，
         # 确保第一条是 user，且不孤立 tool_result
         start = 0
+        found_user = False
         for i, m in enumerate(keep):
             if isinstance(m, dict) and m.get("role") == "user":
                 start = i
+                found_user = True
                 break
-        else:
-            # 全是 assistant/tool，清空
-            keep = []
+        if not found_user:
+            # 窗口内可能仅有 assistant/tool（或角色命名异常）；勿整段清空，避免上游收到空 messages
             start = 0
         keep = keep[start:]
 
