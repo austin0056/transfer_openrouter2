@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time as _time
 from typing import Any
 
 
@@ -156,6 +157,9 @@ class AnthropicStreamState:
         self.usage: dict[str, Any] | None = None
         self.finish_reason: str | None = None
         self.error_emitted: bool = False  # 是否已发过 error chunk
+        self.role_sent: bool = False  # 是否已发过 role chunk（只发一次）
+        self.in_thinking: bool = False  # 当前是否在 thinking block 中
+        self.thinking_chars: int = 0  # thinking 累积字符数
 
 
 def parse_anthropic_sse(raw_lines: list[str]) -> tuple[str, dict[str, Any] | None]:
@@ -240,6 +244,7 @@ def anthropic_event_to_openai_chunk(
         state.current_block_type = cb.get("type", "text")
 
         if state.current_block_type == "tool_use":
+            state.in_thinking = False
             state.tool_call_index += 1
             idx = state.tool_call_index
             tc_id = cb.get("id", "")
@@ -248,16 +253,29 @@ def anthropic_event_to_openai_chunk(
                 "id": tc_id, "type": "function",
                 "function": {"name": tc_name, "arguments": ""},
             }
-            chunk = _make_openai_chunk(state, delta={
+            delta: dict[str, Any] = {
                 "tool_calls": [{"index": idx, "id": tc_id, "type": "function",
                                 "function": {"name": tc_name, "arguments": ""}}]
-            })
+            }
+            if not state.role_sent:
+                delta["role"] = "assistant"
+                state.role_sent = True
+            chunk = _make_openai_chunk(state, delta=delta)
             return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
-        if state.current_block_type in ("text", "thinking"):
-            # text 或 thinking block 开始 — 发送 role
-            chunk = _make_openai_chunk(state, delta={"role": "assistant", "content": ""})
-            return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        if state.current_block_type == "thinking":
+            # thinking block 开始 — 静默跳过，不发 chunk 给客户端
+            state.in_thinking = True
+            return None
+
+        if state.current_block_type == "text":
+            state.in_thinking = False
+            # 只在第一次发 role chunk
+            if not state.role_sent:
+                state.role_sent = True
+                chunk = _make_openai_chunk(state, delta={"role": "assistant", "content": ""})
+                return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            return None
 
         return None
 
@@ -269,7 +287,11 @@ def anthropic_event_to_openai_chunk(
             text = delta.get("text", "")
             if text:
                 state.text_parts.append(text)
-                chunk = _make_openai_chunk(state, delta={"content": text})
+                oai_delta: dict[str, Any] = {"content": text}
+                if not state.role_sent:
+                    oai_delta["role"] = "assistant"
+                    state.role_sent = True
+                chunk = _make_openai_chunk(state, delta=oai_delta)
                 return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
         elif delta_type == "input_json_delta":
@@ -283,12 +305,10 @@ def anthropic_event_to_openai_chunk(
                 return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
         elif delta_type == "thinking_delta":
-            # 扩展思考：流式输出给客户端，Cursor 能看到推理过程
+            # 扩展思考：只累积字符数，不发内容给客户端
             thinking_text = delta.get("thinking", "")
             if thinking_text:
-                state.text_parts.append(thinking_text)
-                chunk = _make_openai_chunk(state, delta={"content": thinking_text})
-                return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                state.thinking_chars += len(thinking_text)
             return None
 
         elif delta_type == "signature_delta":
@@ -298,6 +318,17 @@ def anthropic_event_to_openai_chunk(
         return None
 
     if dtype == "content_block_stop":
+        if state.in_thinking and state.thinking_chars > 0:
+            # thinking block 结束 — 输出一行省略摘要
+            state.in_thinking = False
+            summary = f"> 🧠 Thinking ({state.thinking_chars} chars)...\n\n"
+            state.thinking_chars = 0
+            oai_delta: dict[str, Any] = {"content": summary}
+            if not state.role_sent:
+                oai_delta["role"] = "assistant"
+                state.role_sent = True
+            chunk = _make_openai_chunk(state, delta=oai_delta)
+            return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
         return None
 
     if dtype == "message_delta":
@@ -311,12 +342,18 @@ def anthropic_event_to_openai_chunk(
             state.usage["total_tokens"] = (
                 state.usage.get("prompt_tokens", 0) + u.get("output_tokens", 0)
             )
-        # 输出 finish chunk
-        chunk = _make_openai_chunk(state, delta={}, finish=state.finish_reason)
-        return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        # 不在这里发 finish chunk — 等 message_stop 时一起发
+        # 这样避免 Cursor 收到 finish_reason 后提前关闭连接
+        return None
 
     if dtype == "message_stop":
-        return "data: [DONE]\n\n"
+        # 在 [DONE] 之前发 finish chunk（带 usage），然后发 [DONE]
+        parts: list[str] = []
+        finish = state.finish_reason or "stop"
+        chunk = _make_openai_chunk(state, delta={}, finish=finish)
+        parts.append(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n")
+        parts.append("data: [DONE]\n\n")
+        return "".join(parts)
 
     return None
 
@@ -334,6 +371,7 @@ def _make_openai_chunk(
     chunk: dict[str, Any] = {
         "id": f"chatcmpl-{state.message_id}",
         "object": "chat.completion.chunk",
+        "created": int(_time.time()),
         "model": state.model,
         "choices": [choice],
     }

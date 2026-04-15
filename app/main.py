@@ -774,6 +774,26 @@ async def _dual_model_stream(
     )
 
 
+@asynccontextmanager
+async def _stream_with_retry(client, url, headers, json_body, settings, session_id, is_anthropic):
+    """对 5xx 错误做一次透明重试（仅 Anthropic 路径）。"""
+    async with client.stream("POST", url, headers=headers, json=json_body) as r:
+        if r.status_code >= 500 and is_anthropic:
+            await r.aread()  # 读完 body 释放连接
+            if settings.log_chat_metadata:
+                logger.warning(
+                    "upstream_5xx session=%s status=%d, retrying once...",
+                    session_id, r.status_code,
+                )
+            await asyncio.sleep(0.5)
+        else:
+            yield r
+            return
+    # 重试一次
+    async with client.stream("POST", url, headers=headers, json=json_body) as r2:
+        yield r2
+
+
 async def _stream_chat(
     request: Request,
     client: httpx.AsyncClient,
@@ -799,7 +819,7 @@ async def _stream_chat(
         tool_call_id_to_index: dict[str, int] = {}
         last_finish: str | None = None
         try:
-            async with client.stream("POST", url, headers=headers, json=merged) as r:
+            async with _stream_with_retry(client, url, headers, merged, settings, session_external, is_anthropic) as r:
                 if r.status_code >= 400:
                     err_body = await r.aread()
                     err = err_body.decode("utf-8", errors="replace")

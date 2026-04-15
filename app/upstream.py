@@ -1006,7 +1006,10 @@ def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) 
         _inject_identity_prompt(body, settings)
         _inject_efficiency_prompt(body, settings)
         _sort_tools(body)
-    # Anthropic 原生通道：零注入零修改，保持模型原始智力
+    else:
+        # Anthropic 原生通道：只注入 identity prompt（保证自称正确），
+        # 不注入 efficiency prompt — 保持模型原始智力
+        _inject_identity_prompt(body, settings)
     _compress_old_messages(body, settings)
 
     if settings.upstream_provider == "anthropic":
@@ -1122,10 +1125,24 @@ def _build_anthropic_body(body: dict[str, Any], settings: Settings) -> dict[str,
             # OpenAI tool result → Anthropic tool_result block in user message
             tc_id = m.get("tool_call_id", "")
             tc_content = m.get("content", "")
-            result_block = {
+            # content 可能是 str、list（content blocks）或其他
+            if isinstance(tc_content, str):
+                result_content = tc_content
+            elif isinstance(tc_content, list):
+                # OpenAI content block 数组 → 提取文本拼接
+                parts = []
+                for blk in tc_content:
+                    if isinstance(blk, dict):
+                        parts.append(blk.get("text", "") or blk.get("content", ""))
+                    elif isinstance(blk, str):
+                        parts.append(blk)
+                result_content = "\n".join(p for p in parts if p)
+            else:
+                result_content = str(tc_content) if tc_content else ""
+            result_block: dict[str, Any] = {
                 "type": "tool_result",
                 "tool_use_id": tc_id,
-                "content": tc_content if isinstance(tc_content, str) else str(tc_content),
+                "content": result_content,
             }
             # Anthropic 要求 tool_result 放在 user 消息中
             if anthropic_msgs and anthropic_msgs[-1].get("role") == "user":
@@ -1148,6 +1165,37 @@ def _build_anthropic_body(body: dict[str, Any], settings: Settings) -> dict[str,
                 anthropic_msgs.append({"role": "user", "content": blocks})
 
     out["messages"] = anthropic_msgs
+
+    # ── 强制 user/assistant 严格交替（Anthropic 硬性要求）──
+    # 第一条必须是 user；连续同角色需要合并或插入占位
+    if anthropic_msgs:
+        # 确保第一条是 user
+        if anthropic_msgs[0].get("role") != "user":
+            anthropic_msgs.insert(0, {"role": "user", "content": [{"type": "text", "text": "."}]})
+        # 合并连续同角色消息 / 插入占位消息
+        merged_msgs: list[dict[str, Any]] = [anthropic_msgs[0]]
+        for m in anthropic_msgs[1:]:
+            prev_role = merged_msgs[-1].get("role")
+            cur_role = m.get("role")
+            if cur_role == prev_role:
+                # 同角色：合并 content
+                prev_content = merged_msgs[-1].get("content", [])
+                cur_content = m.get("content", [])
+                if isinstance(prev_content, list) and isinstance(cur_content, list):
+                    prev_content.extend(cur_content)
+                elif isinstance(prev_content, str) and isinstance(cur_content, str):
+                    merged_msgs[-1]["content"] = prev_content + "\n" + cur_content
+                else:
+                    # 类型不一致，插入占位消息
+                    placeholder_role = "user" if cur_role == "assistant" else "assistant"
+                    merged_msgs.append({"role": placeholder_role, "content": [{"type": "text", "text": "."}]})
+                    merged_msgs.append(m)
+            else:
+                merged_msgs.append(m)
+        # 确保最后一条是 user（Anthropic 要求最后一条必须是 user）
+        if merged_msgs[-1].get("role") != "user":
+            merged_msgs.append({"role": "user", "content": [{"type": "text", "text": "."}]})
+        out["messages"] = merged_msgs
 
     # Tools → Anthropic 格式
     tools = body.get("tools")
@@ -1199,7 +1247,21 @@ def _build_anthropic_body(body: dict[str, Any], settings: Settings) -> dict[str,
 
     # 扩展思考（extended thinking）— 显著提升推理能力
     if settings.thinking_enabled:
-        budget = settings.thinking_budget_tokens or 10000
+        base_budget = settings.thinking_budget_tokens or 10000
+        # 动态调整：根据请求复杂度选择 thinking 预算
+        has_tools = bool(body.get("tools"))
+        msg_count = len(body.get("messages") or [])
+        # 有 tools 或消息多 → 复杂请求，给满预算
+        # 无 tools 且消息少 → 简单请求，减少预算降低延迟
+        if has_tools or msg_count > 6:
+            budget = base_budget
+        elif msg_count <= 2:
+            budget = min(base_budget, 4096)
+        else:
+            budget = min(base_budget, 8000)
+        # Anthropic 要求：max_tokens 必须 > budget_tokens
+        if out["max_tokens"] <= budget:
+            out["max_tokens"] = budget + 8192
         out["thinking"] = {"type": "enabled", "budget_tokens": budget}
         # Anthropic 要求：开启 thinking 时 temperature 必须为 1（或不设）
         out.pop("temperature", None)
@@ -1234,10 +1296,11 @@ def _build_anthropic_body(body: dict[str, Any], settings: Settings) -> dict[str,
         out["metadata"] = meta
 
     # 历史消息 cache breakpoint（倒数第二条 user 消息）
-    if settings.cache_enabled and len(anthropic_msgs) >= 3:
-        user_indices = [i for i, m in enumerate(anthropic_msgs) if m.get("role") == "user"]
+    final_msgs = out["messages"]
+    if settings.cache_enabled and len(final_msgs) >= 3:
+        user_indices = [i for i, m in enumerate(final_msgs) if m.get("role") == "user"]
         if len(user_indices) >= 2:
-            prev_user = anthropic_msgs[user_indices[-2]]
+            prev_user = final_msgs[user_indices[-2]]
             blocks = prev_user.get("content", [])
             if isinstance(blocks, list) and blocks:
                 last_block = blocks[-1]
@@ -1281,9 +1344,13 @@ def anthropic_response_to_openai(resp: dict[str, Any]) -> dict[str, Any]:
             tc_index += 1
 
     msg: dict[str, Any] = {"role": "assistant"}
-    # 合并 thinking + text（thinking 放前面，Cursor 能看到推理过程）
-    all_parts = thinking_parts + text_parts
-    msg["content"] = "\n".join(all_parts) if all_parts else None
+    # thinking 以省略摘要形式输出，不贴完整内容
+    output_parts: list[str] = []
+    if thinking_parts:
+        total = sum(len(t) for t in thinking_parts)
+        output_parts.append(f"> 🧠 Thinking ({total} chars)...")
+    output_parts.extend(text_parts)
+    msg["content"] = "\n".join(output_parts) if output_parts else None
     if tool_calls:
         msg["tool_calls"] = tool_calls
 
@@ -1308,6 +1375,7 @@ def anthropic_response_to_openai(resp: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": resp.get("id", ""),
         "object": "chat.completion",
+        "created": int(__import__("time").time()),
         "model": resp.get("model", ""),
         "choices": [{"index": 0, "message": msg, "finish_reason": finish_reason}],
         "usage": usage,
