@@ -196,40 +196,45 @@ async def head_v1_root() -> Response:
 
 def _openai_models_payload(settings: Settings) -> dict[str, Any]:
     models: list[dict[str, Any]] = []
-    mid = settings.upstream_model
-    owned_by = "openrouter"
-    if settings.upstream_provider == "anthropic":
-        mid = settings.anthropic_model
-        owned_by = "anthropic"
-    elif settings.upstream_provider == "gemini":
-        owned_by = "google"
-    models.append({
-        "id": mid,
-        "object": "model",
-        "created": 0,
-        "owned_by": owned_by,
-        "permission": [],
-        "root": mid,
-        "parent": None,
-        "context_length": 200000,
-        "capabilities": {"vision": True, "function_calling": True},
-    })
-    if settings.dual_model_enabled and settings.dual_model_name:
+    seen: set[str] = set()
+
+    def _append(model_id: str, owned_by: str = "gateway") -> None:
+        mid = (model_id or "").strip()
+        if not mid or mid in seen:
+            return
+        seen.add(mid)
         models.append({
-            "id": settings.dual_model_name,
+            "id": mid,
             "object": "model",
             "created": 0,
-            "owned_by": "gateway",
+            "owned_by": owned_by,
             "permission": [],
-            "root": settings.dual_model_name,
+            "root": mid,
             "parent": None,
-            "context_length": 200000,
+            "context_length": 1000000 if "opus" in mid.lower() else 200000,
             "capabilities": {"vision": True, "function_calling": True},
         })
-    return {
-        "object": "list",
-        "data": models,
-    }
+
+    # 1) advertised_models 里显式列出的优先（多个，逗号/分号/空白分隔）
+    advertised = getattr(settings, "advertised_models", "") or ""
+    if advertised:
+        for name in advertised.replace(";", ",").replace("\n", ",").split(","):
+            _append(name.strip(), owned_by="gateway")
+
+    # 2) 根据当前 provider 追加主模型
+    provider = settings.upstream_provider
+    if provider == "anthropic":
+        _append(settings.anthropic_model, owned_by="anthropic")
+    elif provider == "gemini":
+        _append(settings.upstream_model, owned_by="google")
+    else:
+        _append(settings.upstream_model, owned_by="openrouter")
+
+    # 3) 双模型合成名
+    if settings.dual_model_enabled and settings.dual_model_name:
+        _append(settings.dual_model_name, owned_by="gateway")
+
+    return {"object": "list", "data": models}
 
 
 @app.get("/v1/models")
