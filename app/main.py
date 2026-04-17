@@ -652,14 +652,41 @@ async def _dual_model_stream(
                 if r.status_code >= 400:
                     err_body = await r.aread()
                     err = err_body.decode("utf-8", errors="replace")
+                    # 无条件记录错误（上游 4xx/5xx 一定要知道）
+                    logger.error(
+                        "upstream_http_error session=%s status=%d url=%s body=%s",
+                        session_external, r.status_code, str(r.url)[:200], err[:800],
+                    )
+                    # 发可见的 content chunk，让 Cursor 界面显示错误而不是空白
+                    err_msg = f"[Upstream {r.status_code}] {err[:500]}"
+                    visible_chunk = {
+                        "id": f"chatcmpl-err-{session_external[:12]}",
+                        "object": "chat.completion.chunk",
+                        "model": merged.get("model") or "",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": err_msg},
+                            "finish_reason": None,
+                        }],
+                    }
+                    yield f"data: {json.dumps(visible_chunk, ensure_ascii=False)}\n\n"
+                    # 同时发结构化错误 chunk
                     yield (
                         "data: "
                         + json.dumps(
-                            {"error": {"message": err, "type": "upstream_error"}},
+                            {"error": {"message": err[:1000], "type": "upstream_error", "code": r.status_code}},
                             ensure_ascii=False,
                         )
                         + "\n\n"
                     )
+                    # finish chunk
+                    finish_chunk = {
+                        "id": f"chatcmpl-err-{session_external[:12]}",
+                        "object": "chat.completion.chunk",
+                        "model": merged.get("model") or "",
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
+                    }
+                    yield f"data: {json.dumps(finish_chunk, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
                     return
 
@@ -733,14 +760,41 @@ async def _dual_model_stream(
                 if r.status_code >= 400:
                     err_body = await r.aread()
                     err = err_body.decode("utf-8", errors="replace")
+                    # 无条件记录错误（上游 4xx/5xx 一定要知道）
+                    logger.error(
+                        "upstream_http_error session=%s status=%d url=%s body=%s",
+                        session_external, r.status_code, str(r.url)[:200], err[:800],
+                    )
+                    # 发可见的 content chunk，让 Cursor 界面显示错误而不是空白
+                    err_msg = f"[Upstream {r.status_code}] {err[:500]}"
+                    visible_chunk = {
+                        "id": f"chatcmpl-err-{session_external[:12]}",
+                        "object": "chat.completion.chunk",
+                        "model": merged.get("model") or "",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": err_msg},
+                            "finish_reason": None,
+                        }],
+                    }
+                    yield f"data: {json.dumps(visible_chunk, ensure_ascii=False)}\n\n"
+                    # 同时发结构化错误 chunk
                     yield (
                         "data: "
                         + json.dumps(
-                            {"error": {"message": err, "type": "upstream_error"}},
+                            {"error": {"message": err[:1000], "type": "upstream_error", "code": r.status_code}},
                             ensure_ascii=False,
                         )
                         + "\n\n"
                     )
+                    # finish chunk
+                    finish_chunk = {
+                        "id": f"chatcmpl-err-{session_external[:12]}",
+                        "object": "chat.completion.chunk",
+                        "model": merged.get("model") or "",
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
+                    }
+                    yield f"data: {json.dumps(finish_chunk, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
                     return
 
@@ -828,14 +882,41 @@ async def _stream_chat(
                 if r.status_code >= 400:
                     err_body = await r.aread()
                     err = err_body.decode("utf-8", errors="replace")
+                    # 无条件记录错误（上游 4xx/5xx 必须日志）
+                    logger.error(
+                        "upstream_http_error session=%s status=%d url=%s body=%s",
+                        session_external, r.status_code, str(r.url)[:200], err[:800],
+                    )
+                    # 发可见 content chunk 让 Cursor 显示错误而不是空白
+                    err_head = f"[Upstream {r.status_code}] {err[:500]}"
+                    visible_chunk = {
+                        "id": f"chatcmpl-err-{session_external[:12]}",
+                        "object": "chat.completion.chunk",
+                        "model": merged.get("model") or "",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": err_head},
+                            "finish_reason": None,
+                        }],
+                    }
+                    yield f"data: {json.dumps(visible_chunk, ensure_ascii=False)}\n\n"
+                    # 结构化 error chunk
                     yield (
                         "data: "
                         + json.dumps(
-                            {"error": {"message": err, "type": "upstream_error"}},
+                            {"error": {"message": err[:1000], "type": "upstream_error", "code": r.status_code}},
                             ensure_ascii=False,
                         )
                         + "\n\n"
                     )
+                    # finish chunk
+                    finish_chunk = {
+                        "id": f"chatcmpl-err-{session_external[:12]}",
+                        "object": "chat.completion.chunk",
+                        "model": merged.get("model") or "",
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
+                    }
+                    yield f"data: {json.dumps(finish_chunk, ensure_ascii=False)}\n\n"
                     upstream_ok = False
                     return
                 upstream_ok = True
