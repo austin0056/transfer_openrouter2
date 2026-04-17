@@ -1001,15 +1001,17 @@ def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) 
     body = _shallow_body_copy(client_body)
     _coerce_raw_chat_request(body)
     _adapt_openai_body_for_upstream(body, settings)
-    if settings.upstream_provider != "anthropic":
-        # OpenRouter 路径：可选注入 identity/efficiency prompt
+    # 零注入策略：任何对 system prompt 的修改都会破坏缓存前缀匹配，
+    # 导致 OpenRouter/Anthropic 的 prompt caching 命中率归零。
+    # 仅在用户显式启用时才注入（identity/efficiency 默认关闭）。
+    if settings.identity_prompt_enabled:
         _inject_identity_prompt(body, settings)
+    if settings.upstream_provider != "anthropic" and settings.efficiency_prompt_enabled:
         _inject_efficiency_prompt(body, settings)
+    # 工具排序只对 OpenRouter 执行（保证多次请求 tools 列表字节一致）
+    # Anthropic 路径保留原始顺序 — 上游模型已见过 Cursor 原始顺序，改了反而破坏缓存
+    if settings.upstream_provider == "openrouter":
         _sort_tools(body)
-    else:
-        # Anthropic 原生通道：只注入 identity prompt（保证自称正确），
-        # 不注入 efficiency prompt — 保持模型原始智力
-        _inject_identity_prompt(body, settings)
     _compress_old_messages(body, settings)
 
     if settings.upstream_provider == "anthropic":
@@ -1043,9 +1045,22 @@ def _build_gemini_body(body: dict[str, Any], settings: Settings) -> dict[str, An
 
 
 def _build_openrouter_body(body: dict[str, Any], settings: Settings) -> dict[str, Any]:
-    """OpenRouter 路径（现有逻辑）。"""
+    """OpenRouter 路径（OpenAI 格式透传 + 增强）。"""
     body["model"] = settings.upstream_model
-    body["provider"] = {"only": ["anthropic"], "allow_fallbacks": False}
+    # 仅在用户明确需要时限制 provider；默认让 OpenRouter 自由路由以支持 fallback
+    # （原先的 {"only":["anthropic"]} 会阻断 fallback，引发 503）
+    body["provider"] = {"allow_fallbacks": True}
+
+    # 流式请求自动带上 stream_options.include_usage=true
+    # 否则 OpenRouter 不会在流式响应里发 usage chunk，Cursor/客户端看不到 token 消耗
+    if body.get("stream"):
+        so = body.get("stream_options")
+        if not isinstance(so, dict):
+            so = {}
+        so.setdefault("include_usage", True)
+        body["stream_options"] = so
+
+    # 缓存：仅对 Claude/Gemini 类模型生效（OpenAI 家族忽略 cache_control）
     if settings.cache_enabled:
         if settings.cache_ttl_1h:
             body["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
@@ -1054,6 +1069,9 @@ def _build_openrouter_body(body: dict[str, Any], settings: Settings) -> dict[str
     else:
         body.pop("cache_control", None)
     _inject_cache_breakpoints(body, settings)
+
+    # 透传请求级 usage 偏好（部分客户端会发 usage: {include: true}）
+    # OpenRouter 也支持 ?include=reasoning_details 等参数，但 body 层不需要改
     return body
 
 

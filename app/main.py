@@ -297,6 +297,7 @@ def _log_chat_upstream_meta(
     response_model: str | None,
     ok: bool,
     err_short: str | None = None,
+    usage: dict[str, Any] | None = None,
 ) -> None:
     if not settings.log_chat_metadata:
         return
@@ -305,13 +306,30 @@ def _log_chat_upstream_meta(
     extra = ""
     if err_short:
         extra = " err=" + err_short[:300].replace("\n", " ")
+    # 记录 token 消耗（OpenRouter 特有的 cached_tokens / cost 一并保留）
+    usage_str = ""
+    if isinstance(usage, dict):
+        pt = usage.get("prompt_tokens", 0)
+        ct = usage.get("completion_tokens", 0)
+        tt = usage.get("total_tokens", 0)
+        # OpenRouter 把缓存命中放在 prompt_tokens_details.cached_tokens
+        details = usage.get("prompt_tokens_details") or {}
+        cached = details.get("cached_tokens", 0) if isinstance(details, dict) else 0
+        # Anthropic 原生也有 cache_read_input_tokens
+        if not cached:
+            cached = usage.get("cache_read_input_tokens", 0) or 0
+        cost = usage.get("cost")
+        usage_str = f" tokens=[p:{pt} c:{ct} t:{tt} cached:{cached}]"
+        if cost is not None:
+            usage_str += f" cost=${cost}"
     logger.info(
-        "chat_upstream_meta ok=%s stream=%s tools=%d request_model=%s response_model=%s%s",
+        "chat_upstream_meta ok=%s stream=%s tools=%d request_model=%s response_model=%s%s%s",
         ok,
         streamed,
         n_tools,
         merged.get("model"),
         response_model,
+        usage_str,
         extra,
     )
 
@@ -543,6 +561,7 @@ async def chat_completions(
         response_model=resp_model,
         ok=r.is_success,
         err_short=r.text if not r.is_success else None,
+        usage=usage,
     )
 
     await _enqueue_persist(
@@ -1116,6 +1135,7 @@ async def _stream_chat(
                 response_model=stream_resp_model,
                 ok=upstream_ok and err is None,
                 err_short=err,
+                usage=last_usage,
             )
             latency_ms = int((time.perf_counter() - t0) * 1000)
             full_text = "".join(parts)
