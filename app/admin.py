@@ -895,8 +895,8 @@ _ADMIN_HTML = """<!DOCTYPE html>
       }
     }
 
-    $("#btnLoad").onclick = async () => {
-      setMsg("加载中…", "");
+    async function doLoad(quiet) {
+      if (!quiet) setMsg("加载中…", "");
       try {
         const r = await fetch("/admin/api/config", { headers: authHeaders() });
         const j = await r.json().catch(() => ({}));
@@ -904,21 +904,57 @@ _ADMIN_HTML = """<!DOCTYPE html>
         fillForm(j.settings || {});
         updateCursorSnippet();
         fetchModelsPreview();
-        setMsg("已加载：" + (j.config_path || ""), "ok");
+        if (!quiet) setMsg("已加载：" + (j.config_path || ""), "ok");
+        return true;
       } catch (e) {
-        setMsg(String(e.message || e), "err");
+        if (!quiet) setMsg(String(e.message || e), "err");
+        return false;
       }
-    };
+    }
+
+    $("#btnLoad").onclick = () => doLoad(false);
+
+    // 管理密钥保存到 localStorage，刷新后自动回填并加载
+    const ADMIN_KEY_STORAGE = "gw_admin_key";
+    try {
+      const saved = localStorage.getItem(ADMIN_KEY_STORAGE);
+      if (saved) {
+        $("#adminKey").value = saved;
+        setTimeout(() => doLoad(true), 100);
+      }
+    } catch (e) {}
+
+    $("#adminKey").addEventListener("change", () => {
+      const k = $("#adminKey").value.trim();
+      if (k) {
+        try { localStorage.setItem(ADMIN_KEY_STORAGE, k); } catch (e) {}
+      }
+    });
+
+    // 密码框失焦时自动加载（方便用户，避免忘记点加载就保存导致 key 被清空）
+    $("#adminKey").addEventListener("blur", () => {
+      if ($("#adminKey").value.trim() && !$("#gatewayApiKey").value) {
+        doLoad(true);
+      }
+    });
 
     $("#btnSave").onclick = async () => {
       setMsg("保存中…", "");
       try {
         const body = readForm();
-        const gw = $("#gatewayApiKey").value.trim();
-        if (!gw) {
-          const key = await fetchNewGatewayKey();
-          body.gateway_api_key = key;
-          $("#gatewayApiKey").value = key;
+        // 密码框为空时不自动生成 key — 避免覆盖已保存的 key 导致客户端 401
+        // 如需新 key 请显式点「随机生成」
+        const gwField = $("#gatewayApiKey").value.trim();
+        if (!gwField) {
+          // 检查后端是否已有 key：有则保留，没有才提示用户去生成
+          try {
+            const rc = await fetch("/admin/api/config", { headers: authHeaders() });
+            const jc = await rc.json().catch(() => ({}));
+            if (rc.ok && !(jc.settings && jc.settings.gateway_api_key)) {
+              setMsg("后端未设置 Gateway 密钥，请先点「随机生成」再保存", "err");
+              return;
+            }
+          } catch (e) {}
         }
         const r = await fetch("/admin/api/config", {
           method: "POST",
