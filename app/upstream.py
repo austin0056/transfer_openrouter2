@@ -1207,9 +1207,16 @@ def _build_anthropic_body(body: dict[str, Any], settings: Settings) -> dict[str,
             fn = t.get("function", {})
             if not isinstance(fn, dict):
                 continue
+            tool_name = fn.get("name", "")
+            if not tool_name:
+                continue  # 无名工具跳过
+            # input_schema 必须是合法 JSON Schema object
+            schema = fn.get("parameters")
+            if not isinstance(schema, dict):
+                schema = {"type": "object", "properties": {}}
             atool: dict[str, Any] = {
-                "name": fn.get("name", ""),
-                "input_schema": fn.get("parameters", {}),
+                "name": tool_name,
+                "input_schema": schema,
             }
             desc = fn.get("description")
             if desc:
@@ -1228,10 +1235,13 @@ def _build_anthropic_body(body: dict[str, Any], settings: Settings) -> dict[str,
     elif tc == "required":
         out["tool_choice"] = {"type": "any"}
     elif tc == "none":
-        pass  # Anthropic default
+        # Anthropic 没有 "none"；改为移除 tools 让模型无法调用
+        out.pop("tools", None)
     elif isinstance(tc, dict) and tc.get("type") == "function":
         fn = tc.get("function", {})
-        out["tool_choice"] = {"type": "tool", "name": fn.get("name", "")}
+        name = fn.get("name", "")
+        if name:
+            out["tool_choice"] = {"type": "tool", "name": name}
 
     # max_tokens 必传；按模型最大能力给出默认
     model_lower = (settings.anthropic_model or "").lower()

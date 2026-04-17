@@ -202,6 +202,7 @@ def anthropic_event_to_openai_chunk(
         state.error_emitted = True
         err_info = data.get("error", {}) if isinstance(data.get("error"), dict) else {}
         err_msg = err_info.get("message", "upstream error")
+        err_type = err_info.get("type", "upstream_error")
         err_chunk = {
             "id": f"chatcmpl-{state.message_id or 'error'}",
             "object": "chat.completion.chunk",
@@ -209,8 +210,14 @@ def anthropic_event_to_openai_chunk(
             "choices": [{
                 "index": 0,
                 "delta": {"content": f"\n\n[Upstream error: {err_msg}]"},
-                "finish_reason": "stop",
+                "finish_reason": "error",
             }],
+            # 结构化错误字段（Cursor 能识别为失败响应，不会把内容当正常结果）
+            "error": {
+                "message": err_msg,
+                "type": err_type,
+                "code": err_info.get("code", "upstream_error"),
+            },
         }
         return (
             f"data: {json.dumps(err_chunk, ensure_ascii=False)}\n\n"
@@ -298,6 +305,12 @@ def anthropic_event_to_openai_chunk(
             partial = delta.get("partial_json", "")
             if partial and state.tool_call_index >= 0:
                 idx = state.tool_call_index
+                # 防御：tool_bucket[idx] 可能未初始化（如 content_block_start 丢失）
+                if idx not in state.tool_bucket:
+                    state.tool_bucket[idx] = {
+                        "id": "", "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    }
                 state.tool_bucket[idx]["function"]["arguments"] += partial
                 chunk = _make_openai_chunk(state, delta={
                     "tool_calls": [{"index": idx, "function": {"arguments": partial}}]
@@ -329,6 +342,28 @@ def anthropic_event_to_openai_chunk(
                 state.role_sent = True
             chunk = _make_openai_chunk(state, delta=oai_delta)
             return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        # tool_use block 结束：修正空 arguments，Cursor 执行工具时需要合法 JSON
+        if state.current_block_type == "tool_use" and state.tool_call_index >= 0:
+            idx = state.tool_call_index
+            tc = state.tool_bucket.get(idx)
+            if tc:
+                args = tc["function"].get("arguments", "")
+                if not args.strip():
+                    # 空参数 → 补 "{}"，同时补发一个 chunk 让客户端看到
+                    tc["function"]["arguments"] = "{}"
+                    chunk = _make_openai_chunk(state, delta={
+                        "tool_calls": [{"index": idx, "function": {"arguments": "{}"}}]
+                    })
+                    return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                # 校验累积的 JSON 是否合法；不合法就记警告（不修改，让客户端看到真实问题）
+                try:
+                    json.loads(args)
+                except json.JSONDecodeError:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "tool_use arguments invalid JSON: idx=%d len=%d head=%r",
+                        idx, len(args), args[:200],
+                    )
         return None
 
     if dtype == "message_delta":
