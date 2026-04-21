@@ -100,6 +100,12 @@ async def embed_worker(
         batch.clear()
 
 
+# 连续 401/403 超过阈值后，熔断嵌入功能避免刷屏
+_EMBED_AUTH_FAIL_STREAK = 0
+_EMBED_AUTH_FAIL_THRESHOLD = 3
+_EMBED_DISABLED_UNTIL_RESTART = False
+
+
 async def _try_flush(
     app: FastAPI,
     pool: asyncpg.Pool,
@@ -107,13 +113,38 @@ async def _try_flush(
     batch: list[EmbedJob],
 ) -> None:
     """安全地处理一个批次。"""
+    global _EMBED_AUTH_FAIL_STREAK, _EMBED_DISABLED_UNTIL_RESTART
     if not batch:
         return
+    if _EMBED_DISABLED_UNTIL_RESTART:
+        return  # 熔断后直接丢弃，不再打扰上游
     try:
         client: httpx.AsyncClient = app.state.http_client
         settings = get_settings()
         use_pgvector = settings.embedding_use_pgvector and has_pgvector
         await _flush_batch(pool, client, settings, batch, use_pgvector=use_pgvector)
+        _EMBED_AUTH_FAIL_STREAK = 0  # 成功后清零
+    except httpx.HTTPStatusError as e:
+        status_code = getattr(e.response, "status_code", 0)
+        if status_code in (401, 403):
+            _EMBED_AUTH_FAIL_STREAK += 1
+            if _EMBED_AUTH_FAIL_STREAK >= _EMBED_AUTH_FAIL_THRESHOLD:
+                _EMBED_DISABLED_UNTIL_RESTART = True
+                logger.error(
+                    "embedding auth failed %d times in a row (status=%d url=%s). "
+                    "DISABLING embedding worker until restart. "
+                    "Fix: set embedding_api_key in Admin, or set a valid embedding_base_url, "
+                    "or clear DATABASE_URL to disable persistence+embeddings.",
+                    _EMBED_AUTH_FAIL_STREAK, status_code,
+                    getattr(e.request, "url", "?"),
+                )
+            else:
+                logger.warning(
+                    "embedding auth failed (status=%d, streak=%d/%d)",
+                    status_code, _EMBED_AUTH_FAIL_STREAK, _EMBED_AUTH_FAIL_THRESHOLD,
+                )
+        else:
+            logger.exception("embedding batch failed for %d turns (status=%d)", len(batch), status_code)
     except Exception:
         logger.exception("embedding batch failed for %d turns", len(batch))
 
