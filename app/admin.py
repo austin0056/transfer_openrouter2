@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 
-from app.config import Settings, config_json_path, get_settings, save_runtime_config
+from app.config import Settings, config_json_path, get_settings, reload_settings, save_runtime_config
 from app.http_client import build_http_client
 
 router = APIRouter(tags=["admin"])
@@ -40,7 +40,10 @@ def _public_config(settings: Settings) -> dict[str, Any]:
 
 
 @router.get("/api/config", dependencies=[Depends(verify_admin)])
-async def admin_get_config(settings: Settings = Depends(get_settings)) -> dict[str, Any]:
+async def admin_get_config() -> dict[str, Any]:
+    # 强制从磁盘重读，绕过 5s 缓存。
+    # 多 worker 下，请求可能打到不同 worker；该 worker 的缓存可能是旧值。
+    settings = reload_settings()
     return {"config_path": str(config_json_path()), "settings": _public_config(settings)}
 
 
@@ -55,15 +58,18 @@ async def admin_save_config(
     request: Request,
     body: dict[str, Any],
 ) -> dict[str, Any]:
-    save_runtime_config(body)
-    new_client = build_http_client(get_settings())
+    saved = save_runtime_config(body)
+    new_client = build_http_client(saved)
     old = request.app.state.http_client
     request.app.state.http_client = new_client
     await old.aclose()
+    # 返回最新 settings — 让 admin UI 直接用，不用再发 GET
+    # 也避免其他 worker 还没刷新缓存带来的不一致
     return {
         "ok": True,
         "message": "已保存并刷新 HTTP 客户端。若修改了 DATABASE_URL 或嵌入配置，建议重启进程。",
         "config_path": str(config_json_path()),
+        "settings": _public_config(saved),
     }
 
 
@@ -970,6 +976,11 @@ _ADMIN_HTML = """<!DOCTYPE html>
           typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail) || "保存失败"
         );
         setMsg(j.message || "已保存", "ok");
+        // 用返回的 settings 立即回填，避免多 worker 缓存导致 GET 拿到旧值
+        if (j.settings) {
+          fillForm(j.settings);
+          updateCursorSnippet();
+        }
         fetchModelsPreview();
       } catch (e) {
         setMsg(String(e.message || e), "err");
