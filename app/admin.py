@@ -852,12 +852,16 @@ _ADMIN_HTML = """<!DOCTYPE html>
           out[el.name] = el.checked;
         } else if (el.type === "number") {
           const t = el.value.trim();
-          if (t === "") continue;
+          if (t === "") continue;  // 数字空值跳过（让后端用默认值）
           out[el.name] = t.includes(".") ? parseFloat(t) : parseInt(t, 10);
-        } else {
+        } else if (el.type === "password") {
+          // 密码类字段空值跳过 — 避免误清空 API keys / gateway 密钥
           const t = el.value.trim();
           if (t === "") continue;
           out[el.name] = t;
+        } else {
+          // 普通文本 / textarea / select：空值也发送（允许用户清空 database_url 等）
+          out[el.name] = el.value.trim();
         }
       }
       return out;
