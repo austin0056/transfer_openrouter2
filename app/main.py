@@ -1093,16 +1093,30 @@ async def _stream_chat(
                         # Cursor 会看到 finish_reason=error + error 字段，知道是失败响应
                 else:
                     # OpenRouter/OpenAI SSE 透传
+                    _or_chunks = 0
+                    _or_first_byte_at: float | None = None
+                    _or_exit_reason = "stream_end"
                     async for line in r.aiter_lines():
-                        if await request.is_disconnected():
-                            break
+                        # 注意：不做 is_disconnected 检查 — Starlette 在某些 ASGI
+                        # 环境下会误报 disconnect（尤其是 uvicorn+Zeabur 多 worker），
+                        # 导致中途 break 看起来像"一下子截断"。
+                        # 如果客户端真的断开，yield 会抛异常，会被外层 except 捕获。
+                        if _or_first_byte_at is None:
+                            _or_first_byte_at = time.monotonic()
+                            if settings.log_chat_metadata:
+                                logger.info(
+                                    "or_stream_start session=%s ttfb=%.2fs",
+                                    session_external, _or_first_byte_at - t0,
+                                )
                         yield line + "\n\n"
                         parsed = parse_sse_line(line)
                         if not parsed:
                             continue
                         if parsed.get("__done__"):
                             got_done = True
+                            _or_exit_reason = "got_done"
                             continue
+                        _or_chunks += 1
                         if isinstance(parsed, dict):
                             m = parsed.get("model")
                             if isinstance(m, str) and m:
@@ -1115,6 +1129,15 @@ async def _stream_chat(
                         u = extract_usage(parsed)
                         if u is not None:
                             last_usage = u
+                    # 循环自然结束（或上游提前关闭）
+                    if settings.log_chat_metadata:
+                        logger.info(
+                            "or_stream_end session=%s chunks=%d total=%.2fs "
+                            "finish=%s got_done=%s text_len=%d tools=%d",
+                            session_external, _or_chunks,
+                            time.monotonic() - t0, last_finish, got_done,
+                            sum(len(p) for p in parts), len(tool_bucket),
+                        )
         except httpx.RequestError as e:
             err = str(e)
             yield (
