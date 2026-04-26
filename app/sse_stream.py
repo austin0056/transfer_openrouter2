@@ -115,31 +115,42 @@ def extract_usage(chunk: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def convert_usage_to_additive(usage: dict[str, Any]) -> bool:
-    """Rewrite OpenAI-style usage in place so cached tokens are *additive* to prompt_tokens
-    instead of a *subset* of it.
+def convert_usage_to_additive(
+    usage: dict[str, Any],
+    cache_write_multiplier: float = 1.25,
+) -> bool:
+    """Rewrite OpenAI-style usage in place so the downstream billing layer (which only
+    knows "input" and "cache_read") computes a total that matches the upstream cost.
 
-    OpenAI/OpenRouter semantic: prompt_tokens already includes cached_tokens.
-    Anthropic-additive semantic (what some downstream billing layers expect):
-        prompt_tokens = fresh input only, cached_tokens = additional cache hits.
+    OpenRouter/OpenAI semantic:
+        prompt_tokens = fresh + cache_read + cache_write    (cached and cache_write
+                                                             are subsets of prompt_tokens)
+    Downstream additive semantic (what the dispatch layer expects):
+        prompt_tokens = effective input billed at 1× rate
 
-    A buggy billing layer that expects additive but receives subset semantics would
-    charge prompt_tokens at full rate AND cached_tokens at cache rate — double-billing.
-    Subtracting cached from prompt_tokens before forwarding makes such a layer compute
-    the correct total.
+    Anthropic prices cache_write at a premium (1.25× for 5min TTL, 2× for 1h TTL).
+    The dispatch layer has no separate cache_write line item, so we encode the premium
+    by inflating cache_write tokens to their "1× equivalent" count before forwarding:
+
+        new_prompt_tokens = fresh + round(cache_write × multiplier)
+        cached_tokens unchanged (still billed at 0.1× by the dispatch layer)
 
     Returns True if the usage was modified.
     """
     details = usage.get("prompt_tokens_details")
     cached = 0
+    cache_write = 0
     if isinstance(details, dict):
         cached = details.get("cached_tokens", 0) or 0
-    if not cached:
+        cache_write = details.get("cache_write_tokens", 0) or 0
+    if not cached and not cache_write:
         return False
     prompt = usage.get("prompt_tokens", 0) or 0
-    if not isinstance(prompt, int) or prompt < cached:
+    if not isinstance(prompt, int) or prompt < cached + cache_write:
         return False
-    usage["prompt_tokens"] = prompt - cached
+    fresh = prompt - cached - cache_write
+    inflated_cache_write = round(cache_write * cache_write_multiplier)
+    usage["prompt_tokens"] = fresh + inflated_cache_write
     return True
 
 

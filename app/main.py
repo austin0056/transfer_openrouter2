@@ -548,8 +548,12 @@ async def chat_completions(
     if isinstance(payload, dict):
         usage = payload.get("usage")
         if isinstance(usage, dict):
-            # 同流式路径：把 cached 从 prompt_tokens 中减去，避免下游分发层重复计费
-            convert_usage_to_additive(usage)
+            # 同流式路径：把 cached 从 prompt_tokens 中减去，并把 cache_write
+            # 按 TTL 倍率（5min=1.25×, 1h=2×）折算成等价输入 token，让分发层算对
+            convert_usage_to_additive(
+                usage,
+                cache_write_multiplier=2.0 if settings.cache_ttl_1h else 1.25,
+            )
         else:
             usage = None
         rm = payload.get("model")
@@ -1111,11 +1115,16 @@ async def _stream_chat(
                                     session_external, _or_first_byte_at - t0,
                                 )
                         parsed = parse_sse_line(line)
-                        # 重写 usage 为加法语义后再透传：prompt_tokens 减去 cached_tokens，
-                        # 让按 Anthropic-additive 计费的下游分发层不会把缓存命中部分重复计费。
+                        # 重写 usage：减去 cached_tokens（避免重复计费），
+                        # 同时把 cache_write 按 TTL 倍率（5min=1.25×, 1h=2×）
+                        # 折算成等价输入 token，让分发层"输入 × 1× 价"的算法
+                        # 总额刚好等于上游 cache_write 的真实成本。
                         if isinstance(parsed, dict):
                             u = parsed.get("usage")
-                            if isinstance(u, dict) and convert_usage_to_additive(u):
+                            if isinstance(u, dict) and convert_usage_to_additive(
+                                u,
+                                cache_write_multiplier=2.0 if settings.cache_ttl_1h else 1.25,
+                            ):
                                 line = "data: " + json.dumps(parsed, ensure_ascii=False)
                         yield line + "\n\n"
                         if not parsed:
