@@ -1047,9 +1047,14 @@ def _build_gemini_body(body: dict[str, Any], settings: Settings) -> dict[str, An
 def _build_openrouter_body(body: dict[str, Any], settings: Settings) -> dict[str, Any]:
     """OpenRouter 路径（OpenAI 格式透传 + 增强）。"""
     body["model"] = settings.upstream_model
-    # 仅在用户明确需要时限制 provider；默认让 OpenRouter 自由路由以支持 fallback
-    # （原先的 {"only":["anthropic"]} 会阻断 fallback，引发 503）
-    body["provider"] = {"allow_fallbacks": True}
+    # 限定在支持 prompt caching 的 provider 内做 fallback：
+    # - anthropic 直发、google-vertex 都完整支持 cache_control 计费（命中 0.1×）
+    # - amazon-bedrock 等会静默忽略 cache_control，导致按全价计费
+    # 既避免单 provider 限流引发 503，又保证缓存折扣不丢失
+    body["provider"] = {
+        "only": ["anthropic", "google-vertex"],
+        "allow_fallbacks": True,
+    }
 
     # 流式请求自动带上 stream_options.include_usage=true
     # 否则 OpenRouter 不会在流式响应里发 usage chunk，Cursor/客户端看不到 token 消耗
