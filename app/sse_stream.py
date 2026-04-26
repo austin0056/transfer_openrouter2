@@ -115,6 +115,34 @@ def extract_usage(chunk: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def convert_usage_to_additive(usage: dict[str, Any]) -> bool:
+    """Rewrite OpenAI-style usage in place so cached tokens are *additive* to prompt_tokens
+    instead of a *subset* of it.
+
+    OpenAI/OpenRouter semantic: prompt_tokens already includes cached_tokens.
+    Anthropic-additive semantic (what some downstream billing layers expect):
+        prompt_tokens = fresh input only, cached_tokens = additional cache hits.
+
+    A buggy billing layer that expects additive but receives subset semantics would
+    charge prompt_tokens at full rate AND cached_tokens at cache rate — double-billing.
+    Subtracting cached from prompt_tokens before forwarding makes such a layer compute
+    the correct total.
+
+    Returns True if the usage was modified.
+    """
+    details = usage.get("prompt_tokens_details")
+    cached = 0
+    if isinstance(details, dict):
+        cached = details.get("cached_tokens", 0) or 0
+    if not cached:
+        return False
+    prompt = usage.get("prompt_tokens", 0) or 0
+    if not isinstance(prompt, int) or prompt < cached:
+        return False
+    usage["prompt_tokens"] = prompt - cached
+    return True
+
+
 _FINISH_REASON_ALIASES = {
     "tool_use": "tool_calls",
     "function_call": "tool_calls",

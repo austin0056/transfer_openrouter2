@@ -24,6 +24,7 @@ from app.sse_stream import (
     accumulate_delta,
     accumulate_tool_calls,
     anthropic_event_to_openai_chunk,
+    convert_usage_to_additive,
     extract_usage,
     finish_reason_from_chunk,
     parse_sse_line,
@@ -547,7 +548,8 @@ async def chat_completions(
     if isinstance(payload, dict):
         usage = payload.get("usage")
         if isinstance(usage, dict):
-            pass
+            # 同流式路径：把 cached 从 prompt_tokens 中减去，避免下游分发层重复计费
+            convert_usage_to_additive(usage)
         else:
             usage = None
         rm = payload.get("model")
@@ -1108,8 +1110,14 @@ async def _stream_chat(
                                     "or_stream_start session=%s ttfb=%.2fs",
                                     session_external, _or_first_byte_at - t0,
                                 )
-                        yield line + "\n\n"
                         parsed = parse_sse_line(line)
+                        # 重写 usage 为加法语义后再透传：prompt_tokens 减去 cached_tokens，
+                        # 让按 Anthropic-additive 计费的下游分发层不会把缓存命中部分重复计费。
+                        if isinstance(parsed, dict):
+                            u = parsed.get("usage")
+                            if isinstance(u, dict) and convert_usage_to_additive(u):
+                                line = "data: " + json.dumps(parsed, ensure_ascii=False)
+                        yield line + "\n\n"
                         if not parsed:
                             continue
                         if parsed.get("__done__"):
