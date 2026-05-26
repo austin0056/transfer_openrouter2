@@ -437,6 +437,14 @@ async def chat_completions(
             session_external, _sys_head[:300], ",".join(_tool_names),
         )
 
+    # 记录客户端原始请求的 model（包含后缀，如 claude-opus-4-7-xhigh）
+    # 在响应返回时会把 payload.model 改写为这个名字，以便分发层能正确匹配请求-响应。
+    client_model: str | None = None
+    if isinstance(body, dict):
+        _cm = body.get("model")
+        if isinstance(_cm, str) and _cm.strip():
+            client_model = _cm.strip()
+
     merged = merge_chat_completion_body(body, settings)
     _merged_msgs = merged.get("messages")
     if not isinstance(_merged_msgs, list) or len(_merged_msgs) == 0:
@@ -511,6 +519,7 @@ async def chat_completions(
             return await _dual_model_stream(
                 request, client, url, headers, merged,
                 session_external, t0, settings,
+                client_model=client_model,
             )
         return await _stream_chat(
             request,
@@ -522,6 +531,7 @@ async def chat_completions(
             t0,
             settings,
             is_anthropic=is_anthropic,
+            client_model=client_model,
         )
 
     try:
@@ -565,6 +575,10 @@ async def chat_completions(
     usage = None
     resp_model: str | None = None
     if isinstance(payload, dict):
+        # 把响应里的 model 改写为客户端请求的名字（包含后缀）。
+        # 分发层一般会校验请求-响应 model 一致，不一致就不记 usage。
+        if client_model:
+            payload["model"] = client_model
         usage = payload.get("usage")
         if isinstance(usage, dict):
             # 同流式路径：根据 cache_billing_mode 选择输出原生四字段还是兑价
@@ -676,6 +690,8 @@ async def _dual_model_stream(
     session_external: str,
     t0: float,
     settings: Settings,
+    *,
+    client_model: str | None = None,
 ) -> StreamingResponse:
     """双模型串联：Opus 流式思考 → Qwen 流式执行 tool_calls。"""
 
@@ -910,6 +926,7 @@ async def _stream_chat(
     settings: Settings,
     *,
     is_anthropic: bool = False,
+    client_model: str | None = None,
 ) -> StreamingResponse:
     parts: list[str] = []
     last_usage: dict[str, Any] | None = None
@@ -971,6 +988,10 @@ async def _stream_chat(
                 if is_anthropic:
                     # Anthropic SSE → 实时转为 OpenAI SSE chunk
                     anth_state = AnthropicStreamState()
+                    # 预设 model 为客户端请求名（包含后缀），
+                    # 避免被 message_start 里上游原名覆盖
+                    if client_model:
+                        anth_state.model = client_model
                     event_type = ""
                     last_data_at = time.monotonic()
                     last_yield_at = time.monotonic()
@@ -1140,7 +1161,13 @@ async def _stream_chat(
                         # 同时把 cache_write 按 TTL 倍率（5min=1.25×, 1h=2×）
                         # 折算成等价输入 token，让分发层"输入 × 1× 价"的算法
                         # 总额刚好等于上游 cache_write 的真实成本。
+                        # 同时把 chunk.model 改写为客户端请求的名字（包含后缀），
+                        # 让分发层能正确匹配请求-响应、记录 token 消耗。
                         if isinstance(parsed, dict):
+                            mutated = False
+                            if client_model and parsed.get("model") != client_model:
+                                parsed["model"] = client_model
+                                mutated = True
                             u = parsed.get("usage")
                             if isinstance(u, dict) and convert_usage_to_additive(
                                 u,
@@ -1149,6 +1176,8 @@ async def _stream_chat(
                                 cache_creation_scale=settings.cache_creation_token_scale,
                                 cache_read_scale=settings.cache_read_token_scale,
                             ):
+                                mutated = True
+                            if mutated:
                                 line = "data: " + json.dumps(parsed, ensure_ascii=False)
                         yield line + "\n\n"
                         if not parsed:

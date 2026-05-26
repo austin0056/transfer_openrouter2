@@ -303,7 +303,10 @@ def anthropic_event_to_openai_chunk(
     if dtype == "message_start":
         msg = data.get("message", {})
         state.message_id = msg.get("id", "")
-        state.model = msg.get("model", "")
+        # 只在 state.model 还未被调用方预设时才写入上游 model
+        # （允许网关提前设置 client_model 后缀名）
+        if not state.model:
+            state.model = msg.get("model", "")
         # 提取 input usage
         u = msg.get("usage", {})
         state.usage = {
