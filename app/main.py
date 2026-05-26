@@ -384,6 +384,20 @@ async def chat_completions(
             )
     # 尽早统一 body 形态，便于日志与后续清洗一致（嵌套 request/data、JSON 字符串 messages 等）
     _coerce_raw_chat_request(body)
+    # 诊断：完整 body 头部 dump（4KB），用于排查 Cursor 等客户端字段差异
+    if settings.log_chat_metadata:
+        try:
+            _body_str = json.dumps(body, ensure_ascii=False, default=str)
+            _body_len = len(_body_str)
+            _body_head = _body_str[:4096]
+            _ua = request.headers.get("user-agent", "")
+            _xagent = request.headers.get("x-stainless-agent") or request.headers.get("x-stainless-runtime") or ""
+            logger.info(
+                "chat_body_full session=%s ua=%s xagent=%s body_len=%d body_head=%s",
+                session_external, _ua, _xagent, _body_len, _body_head,
+            )
+        except Exception as _e:
+            logger.warning("chat_body_full session=%s dump_err=%s", session_external, _e)
     # 调试：记录清洗前的原始 messages 结构（含 content block 详细信息）
     if settings.log_chat_metadata:
         _rm = body.get("messages")
