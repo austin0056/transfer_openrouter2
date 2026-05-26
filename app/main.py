@@ -1157,6 +1157,16 @@ async def _stream_chat(
                                     session_external, _or_first_byte_at - t0,
                                 )
                         parsed = parse_sse_line(line)
+                        # 关键：__done__ 是网关内部信号（来自 [DONE] 行），
+                        # 不能把它序列化成 JSON 发给客户端，否则客户端
+                        # 收到 data: {"__done__":true,...} 这种非标准帧，
+                        # 会被 Claude Code Hub 等分发层当成异常，丢弃 usage 字段。
+                        # 必须用标准 data: [DONE] 终止流。
+                        if isinstance(parsed, dict) and parsed.get("__done__"):
+                            got_done = True
+                            _or_exit_reason = "got_done"
+                            yield "data: [DONE]\n\n"
+                            continue
                         # 重写 usage：减去 cached_tokens（避免重复计费），
                         # 同时把 cache_write 按 TTL 倍率（5min=1.25×, 1h=2×）
                         # 折算成等价输入 token，让分发层"输入 × 1× 价"的算法
@@ -1181,10 +1191,6 @@ async def _stream_chat(
                                 line = "data: " + json.dumps(parsed, ensure_ascii=False)
                         yield line + "\n\n"
                         if not parsed:
-                            continue
-                        if parsed.get("__done__"):
-                            got_done = True
-                            _or_exit_reason = "got_done"
                             continue
                         _or_chunks += 1
                         if isinstance(parsed, dict):
