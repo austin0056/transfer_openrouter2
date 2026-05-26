@@ -704,7 +704,7 @@ _KNOWN_BODY_KEYS: set[str] = {
     "service_tier",
     # OpenRouter extensions
     "provider", "cache_control", "transforms", "route",
-    "reasoning_effort", "metadata",
+    "reasoning_effort", "reasoning", "metadata",
 }
 
 
