@@ -216,22 +216,41 @@ def _openai_models_payload(settings: Settings) -> dict[str, Any]:
             "capabilities": {"vision": True, "function_calling": True},
         })
 
+    def _append_with_variants(model_id: str, owned_by: str = "gateway") -> None:
+        """追加基础名 + 所有推理后缀变体（后缀功能打开时）。如果客户端已经传入
+        带后缀的名字，不再重复扩展。"""
+        mid = (model_id or "").strip()
+        if not mid:
+            return
+        if not settings.reasoning_suffix_enabled:
+            _append(mid, owned_by=owned_by)
+            return
+        # 如果已带后缀（用户手写），只追加原名，不展开
+        from app.upstream import parse_reasoning_suffix, REASONING_SUFFIXES
+        base, eff = parse_reasoning_suffix(mid)
+        if eff is not None:
+            _append(mid, owned_by=owned_by)
+            return
+        _append(base, owned_by=owned_by)
+        for suffix in REASONING_SUFFIXES:
+            _append(f"{base}-{suffix}", owned_by=owned_by)
+
     # 1) advertised_models 里显式列出的优先（多个，逗号/分号/空白分隔）
     advertised = getattr(settings, "advertised_models", "") or ""
     if advertised:
         for name in advertised.replace(";", ",").replace("\n", ",").split(","):
-            _append(name.strip(), owned_by="gateway")
+            _append_with_variants(name.strip(), owned_by="gateway")
 
     # 2) 根据当前 provider 追加主模型
     provider = settings.upstream_provider
     if provider == "anthropic":
-        _append(settings.anthropic_model, owned_by="anthropic")
+        _append_with_variants(settings.anthropic_model, owned_by="anthropic")
     elif provider == "gemini":
-        _append(settings.upstream_model, owned_by="google")
+        _append_with_variants(settings.upstream_model, owned_by="google")
     else:
-        _append(settings.upstream_model, owned_by="openrouter")
+        _append_with_variants(settings.upstream_model, owned_by="openrouter")
 
-    # 3) 双模型合成名
+    # 3) 双模型合成名（不展开后缀变体）
     if settings.dual_model_enabled and settings.dual_model_name:
         _append(settings.dual_model_name, owned_by="gateway")
 
@@ -548,11 +567,11 @@ async def chat_completions(
     if isinstance(payload, dict):
         usage = payload.get("usage")
         if isinstance(usage, dict):
-            # 同流式路径：把 cached 从 prompt_tokens 中减去，并把 cache_write
-            # 按 TTL 倍率（5min=1.25×, 1h=2×）折算成等价输入 token，让分发层算对
+            # 同流式路径：根据 cache_billing_mode 选择输出原生四字段还是兑价
             convert_usage_to_additive(
                 usage,
                 cache_write_multiplier=2.0 if settings.cache_ttl_1h else 1.25,
+                mode=settings.cache_billing_mode,
             )
         else:
             usage = None
@@ -1124,6 +1143,7 @@ async def _stream_chat(
                             if isinstance(u, dict) and convert_usage_to_additive(
                                 u,
                                 cache_write_multiplier=2.0 if settings.cache_ttl_1h else 1.25,
+                                mode=settings.cache_billing_mode,
                             ):
                                 line = "data: " + json.dumps(parsed, ensure_ascii=False)
                         yield line + "\n\n"

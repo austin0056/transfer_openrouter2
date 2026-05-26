@@ -519,6 +519,43 @@ _ADMIN_HTML = """<!DOCTYPE html>
         </div>
 
         <div class="card">
+          <h2>🎛️ 推理等级后缀</h2>
+          <p class="section-desc">启用后，每个广告模型名会自动展开为 6 个变体（原名 + 五个后缀）。Cursor 选中后缀变体时，网关会自动剥离后缀、使用原始上游模型，并注入对应的 reasoning effort（OpenRouter）或 thinking budget（Anthropic）。</p>
+          <div class="checks">
+            <div class="check-item">
+              <label><input type="checkbox" name="reasoning_suffix_enabled"/>
+                <span><span class="t">启用后缀</span><span class="field-key" style="display:inline;margin-left:6px">reasoning_suffix_enabled</span>
+                <span class="d">开启后 <code>/v1/models</code> 包含 <code>-low/-medium/-high/-xhigh/-max</code> 变体。</span></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="field" style="margin-top:14px">
+            <div class="field-head"><span class="field-title">low 预算 (tokens)</span><span class="field-key">reasoning_budget_low</span></div>
+            <p class="field-desc">仅 Anthropic upstream 生效；OpenRouter 上游使用 <code>reasoning.effort="low"</code>。</p>
+            <input type="number" name="reasoning_budget_low" placeholder="2048"/>
+          </div>
+          <div class="field">
+            <div class="field-head"><span class="field-title">medium 预算 (tokens)</span><span class="field-key">reasoning_budget_medium</span></div>
+            <input type="number" name="reasoning_budget_medium" placeholder="8192"/>
+          </div>
+          <div class="field">
+            <div class="field-head"><span class="field-title">high 预算 (tokens)</span><span class="field-key">reasoning_budget_high</span></div>
+            <input type="number" name="reasoning_budget_high" placeholder="16384"/>
+          </div>
+          <div class="field">
+            <div class="field-head"><span class="field-title">xhigh 预算 (tokens)</span><span class="field-key">reasoning_budget_xhigh</span></div>
+            <p class="field-desc">OpenRouter 上游采用 <code>{effort:"high", max_tokens:32768}</code>。</p>
+            <input type="number" name="reasoning_budget_xhigh" placeholder="32768"/>
+          </div>
+          <div class="field">
+            <div class="field-head"><span class="field-title">max 预算 (tokens)</span><span class="field-key">reasoning_budget_max</span></div>
+            <p class="field-desc">OpenRouter 上游采用 <code>{effort:"high", max_tokens:65536}</code>。</p>
+            <input type="number" name="reasoning_budget_max" placeholder="65536"/>
+          </div>
+        </div>
+
+        <div class="card">
           <h2>🧠 双模型协同</h2>
           <p class="section-desc">Opus 规划 + Qwen 执行，节省约 50% 成本。仅对有 tools 的流式请求生效。</p>
           <div class="checks">
@@ -609,6 +646,20 @@ _ADMIN_HTML = """<!DOCTYPE html>
                 <span class="d">开启约 1 小时；关闭约 5 分钟。</span></span>
               </label>
             </div>
+          </div>
+
+          <div class="field" style="margin-top:14px">
+            <div class="field-head"><span class="field-title">缓存计费模式</span><span class="field-key">cache_billing_mode</span></div>
+            <p class="field-desc">
+              <code>native</code>：向分发层输出原生四字段（<code>prompt_tokens</code> / <code>cache_creation_input_tokens</code> /
+              <code>cache_read_input_tokens</code> / <code>completion_tokens</code>）。分发层价格表同时配置了
+              <code>cache_creation_input_token_cost</code> 和 <code>cache_read_input_token_cost</code> 时选这个。<br/>
+              <code>additive</code>：老式兑价 — 把 cache_write 按 1.25×/2× 摆进 prompt_tokens，适用于只认 input + cache_read 两个价格的老分发层。
+            </p>
+            <select name="cache_billing_mode">
+              <option value="native">native（原生四字段，推荐）</option>
+              <option value="additive">additive（摆价、老式兼容）</option>
+            </select>
           </div>
 
           <div class="field" style="margin-top:14px">

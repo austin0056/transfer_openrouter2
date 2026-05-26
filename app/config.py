@@ -77,6 +77,26 @@ class Settings(BaseSettings):
     cache_enabled: bool = True
     cache_ttl_1h: bool = True
 
+    # 缓存计费下发格式：
+    #   native    — 向分发层输出原生四字段（prompt_tokens / cache_creation_input_tokens /
+    #               cache_read_input_tokens / completion_tokens）。适用于价格表同时配置了
+    #               cache_creation_input_token_cost 和 cache_read_input_token_cost 的分发层
+    #               （LiteLLM 、 New-API 、 One-API 等）。
+    #   additive  — 老式兑价：把 cache_write 按 1.25×/2× 摆进 prompt_tokens，适用于只认
+    #               两个价格字段的老分发层。
+    cache_billing_mode: str = "native"
+
+    # 推理等级后缀 — 在对外模型名尾部追加 -low/-medium/-high/-xhigh/-max
+    # 客户端选择后，网关会剥离后缀、使用原始上游模型，同时注入相应 reasoning effort。
+    reasoning_suffix_enabled: bool = True
+    # 各后缀对应的 Anthropic thinking budget（仅在 anthropic upstream 生效；
+    # OpenRouter 上游使用 reasoning.effort 字段）
+    reasoning_budget_low: int = 2048
+    reasoning_budget_medium: int = 8192
+    reasoning_budget_high: int = 16384
+    reasoning_budget_xhigh: int = 32768
+    reasoning_budget_max: int = 65536
+
     embedding_model: str = "openai/text-embedding-3-small"
     embedding_dim: int | None = 1536
     embedding_use_pgvector: bool = True

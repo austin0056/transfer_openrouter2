@@ -118,22 +118,34 @@ def extract_usage(chunk: dict[str, Any]) -> dict[str, Any] | None:
 def convert_usage_to_additive(
     usage: dict[str, Any],
     cache_write_multiplier: float = 1.25,
+    mode: str = "native",
 ) -> bool:
-    """Rewrite OpenAI-style usage in place so the downstream billing layer (which only
-    knows "input" and "cache_read") computes a total that matches the upstream cost.
+    """Normalize OpenRouter-style usage so the downstream billing layer computes correctly.
 
-    OpenRouter/OpenAI semantic:
-        prompt_tokens = fresh + cache_read + cache_write    (cached and cache_write
-                                                             are subsets of prompt_tokens)
-    Downstream additive semantic (what the dispatch layer expects):
-        prompt_tokens = effective input billed at 1× rate
+    Upstream (OpenRouter) returns:
+        usage.prompt_tokens = fresh + cache_read + cache_write
+        usage.prompt_tokens_details.cached_tokens      = cache_read
+        usage.prompt_tokens_details.cache_write_tokens = cache_write
 
-    Anthropic prices cache_write at a premium (1.25× for 5min TTL, 2× for 1h TTL).
-    The dispatch layer has no separate cache_write line item, so we encode the premium
-    by inflating cache_write tokens to their "1× equivalent" count before forwarding:
+    Two output modes:
 
-        new_prompt_tokens = fresh + round(cache_write × multiplier)
-        cached_tokens unchanged (still billed at 0.1× by the dispatch layer)
+    1. ``native`` (default, recommended):
+        Emit the four canonical fields the dispatch layer expects:
+            prompt_tokens               = fresh
+            cached_tokens (in details)  = cache_read
+            cache_creation_input_tokens = cache_write   ← LiteLLM/Anthropic native key
+            cache_read_input_tokens     = cache_read    ← LiteLLM/Anthropic native key
+
+        The dispatch layer applies its own per-field price
+        (input_cost / cache_creation_cost / cache_read_cost) and the total
+        matches the upstream `cost` exactly. The billing UI also shows
+        "cache write tokens" line item correctly.
+
+    2. ``additive`` (legacy fallback):
+        For dispatch layers that ONLY know `input` + `cache_read`, fold
+        cache_write tokens into prompt_tokens at the premium rate:
+            new_prompt_tokens = fresh + round(cache_write × multiplier)
+        (1.25× for 5min TTL, 2× for 1h TTL)
 
     Returns True if the usage was modified.
     """
@@ -149,6 +161,22 @@ def convert_usage_to_additive(
     if not isinstance(prompt, int) or prompt < cached + cache_write:
         return False
     fresh = prompt - cached - cache_write
+
+    if mode == "native":
+        # Strip cached + cache_write from prompt_tokens so the dispatch layer
+        # bills them via cache_creation_input_tokens / cache_read_input_tokens.
+        usage["prompt_tokens"] = fresh
+        if cache_write:
+            usage["cache_creation_input_tokens"] = cache_write
+        if cached:
+            usage["cache_read_input_tokens"] = cached
+        # Keep prompt_tokens_details for downstream that reads it,
+        # but normalize cached_tokens so cached is not counted twice.
+        # OpenRouter's `cached_tokens` already represents cache reads,
+        # which we now expose explicitly via cache_read_input_tokens.
+        return True
+
+    # legacy additive mode
     inflated_cache_write = round(cache_write * cache_write_multiplier)
     usage["prompt_tokens"] = fresh + inflated_cache_write
     return True

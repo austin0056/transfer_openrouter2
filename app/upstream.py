@@ -10,6 +10,86 @@ from typing import Any
 from app.config import Settings
 
 
+# ─────────────────────────────────────────────────────────────────
+# Reasoning effort suffix parsing
+# ─────────────────────────────────────────────────────────────────
+
+REASONING_SUFFIXES: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+
+
+def parse_reasoning_suffix(model_id: str) -> tuple[str, str | None]:
+    """Strip a trailing ``-low|-medium|-high|-xhigh|-max`` from a model id.
+
+    Returns ``(base_model, effort_or_none)``. Matching is case-insensitive on
+    the suffix only; the base model casing is preserved verbatim.
+
+    Examples
+    --------
+    >>> parse_reasoning_suffix("claude-opus-4-7")
+    ('claude-opus-4-7', None)
+    >>> parse_reasoning_suffix("claude-opus-4-7-high")
+    ('claude-opus-4-7', 'high')
+    >>> parse_reasoning_suffix("anthropic/claude-opus-4.7-xhigh")
+    ('anthropic/claude-opus-4.7', 'xhigh')
+    """
+    if not isinstance(model_id, str):
+        return model_id, None  # type: ignore[return-value]
+    mid = model_id.strip()
+    if not mid:
+        return mid, None
+    lower = mid.lower()
+    for suffix in REASONING_SUFFIXES:
+        marker = "-" + suffix
+        if lower.endswith(marker) and len(mid) > len(marker):
+            return mid[: -len(marker)], suffix
+    return mid, None
+
+
+def budget_for_effort(settings: Settings, effort: str | None) -> int | None:
+    """Map an effort label to an Anthropic ``thinking.budget_tokens`` value.
+
+    Returns ``None`` when no suffix was supplied (caller should fall back to
+    its own default behaviour, e.g. ``settings.thinking_budget_tokens``).
+    """
+    if not effort:
+        return None
+    table = {
+        "low":    settings.reasoning_budget_low,
+        "medium": settings.reasoning_budget_medium,
+        "high":   settings.reasoning_budget_high,
+        "xhigh":  settings.reasoning_budget_xhigh,
+        "max":    settings.reasoning_budget_max,
+    }
+    return table.get(effort)
+
+
+def apply_reasoning_to_openrouter_body(
+    body: dict[str, Any],
+    effort: str | None,
+) -> None:
+    """Inject OpenRouter ``reasoning`` field based on the parsed effort label.
+
+    Mapping:
+      low/medium/high → ``{"effort": "low|medium|high"}``
+      xhigh           → ``{"effort": "high", "max_tokens": 32768}``
+      max             → ``{"effort": "high", "max_tokens": 65536}``
+
+    A pre-existing ``reasoning_effort`` key on the request takes precedence
+    (the suffix is silently ignored in that case).
+    """
+    if not effort:
+        return
+    # Honor explicit client-supplied reasoning_effort
+    if body.get("reasoning_effort") or body.get("reasoning"):
+        return
+    if effort in ("low", "medium", "high"):
+        body["reasoning"] = {"effort": effort}
+    elif effort == "xhigh":
+        body["reasoning"] = {"effort": "high", "max_tokens": 32768}
+    elif effort == "max":
+        body["reasoning"] = {"effort": "high", "max_tokens": 65536}
+
+
 def _inject_identity_prompt(body: dict[str, Any], settings: Settings) -> None:
     """可选：注入 system，向用户说明本线路固定为 Opus（减少误称 Sonnet）。"""
     if not settings.identity_prompt_enabled:
@@ -1000,6 +1080,15 @@ def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) 
     """根据 upstream_provider 构建请求体。"""
     body = _shallow_body_copy(client_body)
     _coerce_raw_chat_request(body)
+
+    # 识别客户端传进来的 -low/-medium/-high/-xhigh/-max 后缀。
+    # 后缀仅用于决定 reasoning effort 及 thinking budget；
+    # 最终发给上游的 model 由 _build_*_body 赋值（与 settings.upstream_model 一致）。
+    effort: str | None = None
+    requested_model = body.get("model")
+    if settings.reasoning_suffix_enabled and isinstance(requested_model, str):
+        _, effort = parse_reasoning_suffix(requested_model)
+
     _adapt_openai_body_for_upstream(body, settings)
     # 零注入策略：任何对 system prompt 的修改都会破坏缓存前缀匹配，
     # 导致 OpenRouter/Anthropic 的 prompt caching 命中率归零。
@@ -1015,10 +1104,10 @@ def merge_chat_completion_body(client_body: dict[str, Any], settings: Settings) 
     _compress_old_messages(body, settings)
 
     if settings.upstream_provider == "anthropic":
-        return _build_anthropic_body(body, settings)
+        return _build_anthropic_body(body, settings, effort=effort)
     if settings.upstream_provider == "gemini":
         return _build_gemini_body(body, settings)
-    return _build_openrouter_body(body, settings)
+    return _build_openrouter_body(body, settings, effort=effort)
 
 
 # Gemini OpenAI 兼容 API 常见最大输出上限（超过易 400）
@@ -1044,9 +1133,16 @@ def _build_gemini_body(body: dict[str, Any], settings: Settings) -> dict[str, An
     return body
 
 
-def _build_openrouter_body(body: dict[str, Any], settings: Settings) -> dict[str, Any]:
+def _build_openrouter_body(
+    body: dict[str, Any],
+    settings: Settings,
+    *,
+    effort: str | None = None,
+) -> dict[str, Any]:
     """OpenRouter 路径（OpenAI 格式透传 + 增强）。"""
     body["model"] = settings.upstream_model
+    # 后缀驱动的 reasoning effort
+    apply_reasoning_to_openrouter_body(body, effort)
     # 限定在支持 prompt caching 的 provider 内做 fallback：
     # - anthropic 直发、google-vertex 都完整支持 cache_control 计费（命中 0.1×）
     # - amazon-bedrock 等会静默忽略 cache_control，导致按全价计费
@@ -1085,7 +1181,12 @@ def _build_openrouter_body(body: dict[str, Any], settings: Settings) -> dict[str
 # ─────────────────────────────────────────────────────────────────
 
 
-def _build_anthropic_body(body: dict[str, Any], settings: Settings) -> dict[str, Any]:
+def _build_anthropic_body(
+    body: dict[str, Any],
+    settings: Settings,
+    *,
+    effort: str | None = None,
+) -> dict[str, Any]:
     """OpenAI 格式 → Anthropic Messages API 格式。"""
     msgs = body.get("messages") or []
     out: dict[str, Any] = {"model": settings.anthropic_model}
@@ -1278,8 +1379,15 @@ def _build_anthropic_body(body: dict[str, Any], settings: Settings) -> dict[str,
         else:
             out["max_tokens"] = 128000
 
-    # 扩展思考（extended thinking）— 显著提升推理能力
-    if settings.thinking_enabled:
+    # 扩展思考（extended thinking）— 后缀优先于 settings.thinking_budget_tokens
+    suffix_budget = budget_for_effort(settings, effort)
+    if suffix_budget is not None:
+        # 后缀明确指定了等级 → 强制启用思考，采用后缀对应预算
+        if out["max_tokens"] <= suffix_budget:
+            out["max_tokens"] = suffix_budget + 8192
+        out["thinking"] = {"type": "enabled", "budget_tokens": suffix_budget}
+        out.pop("temperature", None)
+    elif settings.thinking_enabled:
         base_budget = settings.thinking_budget_tokens or 10000
         # 动态调整：根据请求复杂度选择 thinking 预算
         has_tools = bool(body.get("tools"))
