@@ -1203,10 +1203,12 @@ async def _stream_chat(
                     if settings.log_chat_metadata:
                         logger.info(
                             "or_stream_end session=%s chunks=%d total=%.2fs "
-                            "finish=%s got_done=%s text_len=%d tools=%d",
+                            "finish=%s got_done=%s text_len=%d tools=%d usage=%s model=%s",
                             session_external, _or_chunks,
                             time.monotonic() - t0, last_finish, got_done,
                             sum(len(p) for p in parts), len(tool_bucket),
+                            json.dumps(last_usage, ensure_ascii=False) if last_usage else None,
+                            stream_resp_model,
                         )
         except httpx.RequestError as e:
             err = str(e)

@@ -163,11 +163,14 @@ def convert_usage_to_additive(
     if not isinstance(prompt, int) or prompt < cached + cache_write:
         return False
     fresh = prompt - cached - cache_write
+    completion = usage.get("completion_tokens", 0) or 0
 
     if mode == "native":
         # Strip cached + cache_write from prompt_tokens so the dispatch layer
         # bills them via cache_creation_input_tokens / cache_read_input_tokens.
         usage["prompt_tokens"] = fresh
+        scaled_cw = 0
+        scaled_cr = 0
         if cache_write:
             scaled_cw = round(cache_write * cache_creation_scale)
             usage["cache_creation_input_tokens"] = scaled_cw
@@ -179,11 +182,17 @@ def convert_usage_to_additive(
             usage["cache_read_input_tokens"] = scaled_cr
             if isinstance(usage.get("prompt_tokens_details"), dict):
                 usage["prompt_tokens_details"]["cached_tokens"] = scaled_cr
+        # 重算 total_tokens：分发层（New-API / One-API 等）常常要求
+        # total_tokens == prompt_tokens + completion_tokens (+ cache 字段）。
+        # 只保留上游原始 total 会跟改写后的 prompt 不一致、被分发层以
+        # "非法 usage" 为由丢弃 → 表现为 token 消耗为 0 / 不显示。
+        usage["total_tokens"] = fresh + scaled_cw + scaled_cr + completion
         return True
 
     # legacy additive mode
     inflated_cache_write = round(cache_write * cache_write_multiplier)
     usage["prompt_tokens"] = fresh + inflated_cache_write
+    usage["total_tokens"] = usage["prompt_tokens"] + completion
     return True
 
 
