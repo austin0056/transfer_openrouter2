@@ -157,13 +157,21 @@ def convert_usage_to_additive(
     if isinstance(details, dict):
         cached = details.get("cached_tokens", 0) or 0
         cache_write = details.get("cache_write_tokens", 0) or 0
-    if not cached and not cache_write:
-        return False
     prompt = usage.get("prompt_tokens", 0) or 0
-    if not isinstance(prompt, int) or prompt < cached + cache_write:
-        return False
-    fresh = prompt - cached - cache_write
     completion = usage.get("completion_tokens", 0) or 0
+    # 始终向 usage 添加 Anthropic 原生字段名（供 Claude Code Hub 等 Claude 优化的
+    # 分发层识别计费）。OpenAI 解析器看不到这些字段也不会报错。
+    if "input_tokens" not in usage:
+        usage["input_tokens"] = prompt
+    if "output_tokens" not in usage:
+        usage["output_tokens"] = completion
+    if not cached and not cache_write:
+        # 无缓存场景：上游 prompt_tokens 已是 fresh，无需重写。
+        # 但为了让 Anthropic 侧字段 input_tokens 也被看到，返回 True 让上层刷 SSE
+        return True
+    if not isinstance(prompt, int) or prompt < cached + cache_write:
+        return True
+    fresh = prompt - cached - cache_write
 
     if mode == "native":
         # Strip cached + cache_write from prompt_tokens so the dispatch layer
@@ -187,12 +195,21 @@ def convert_usage_to_additive(
         # 只保留上游原始 total 会跟改写后的 prompt 不一致、被分发层以
         # "非法 usage" 为由丢弃 → 表现为 token 消耗为 0 / 不显示。
         usage["total_tokens"] = fresh + scaled_cw + scaled_cr + completion
+        # Anthropic 原生语义：input_tokens = fresh（不含 cache 读写）。
+        # Claude Code Hub 等分发层会从这里读、加上 cache_creation/read 单独计价。
+        usage["input_tokens"] = fresh
+        usage["output_tokens"] = completion
         return True
 
     # legacy additive mode
     inflated_cache_write = round(cache_write * cache_write_multiplier)
     usage["prompt_tokens"] = fresh + inflated_cache_write
     usage["total_tokens"] = usage["prompt_tokens"] + completion
+    # additive 模式下：Anthropic 侧 input_tokens 包含兑价后的输入（与 prompt_tokens 一致）
+    usage["input_tokens"] = usage["prompt_tokens"]
+    usage["output_tokens"] = completion
+    if cached:
+        usage["cache_read_input_tokens"] = cached
     return True
 
 
