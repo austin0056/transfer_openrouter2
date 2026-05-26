@@ -86,6 +86,15 @@ class Settings(BaseSettings):
     #               两个价格字段的老分发层。
     cache_billing_mode: str = "native"
 
+    # 缓存 token 缩放系数（仅 native 模式生效）
+    # 上游估价 ≠ 分发层价格表上的 cache 价时，用这个入参调整输出 token 数，
+    # 使 分发层计算 (token_count × dispatch_rate) == 上游实收。
+    # scale = upstream_rate / dispatch_rate
+    # 例：上游按 $5/M 收 cache_write，分发层配 $6.25/M → scale = 5/6.25 = 0.8
+    # 1.0 = 原样透传（默认）
+    cache_creation_token_scale: float = 1.0
+    cache_read_token_scale: float = 1.0
+
     # 推理等级后缀 — 在对外模型名尾部追加 -low/-medium/-high/-xhigh/-max
     # 客户端选择后，网关会剥离后缀、使用原始上游模型，同时注入相应 reasoning effort。
     reasoning_suffix_enabled: bool = True

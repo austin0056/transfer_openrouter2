@@ -662,6 +662,24 @@ _ADMIN_HTML = """<!DOCTYPE html>
             </select>
           </div>
 
+          <div class="field">
+            <div class="field-head"><span class="field-title">cache_write token 缩放系数</span><span class="field-key">cache_creation_token_scale</span></div>
+            <p class="field-desc">
+              仅 native 模式生效。当上游实收价 ≠ 分发层价格表价时，用这个参数调整输出 token 数、让分发层计算 (token × 价格) = 上游实收。
+              <strong>公式：</strong> scale = upstream_rate ÷ dispatch_rate。
+              例：上游 cache_write 按 $5/M 收、分发层配 $6.25/M → 填 <code>0.8</code>（0 增加费 = 0.8×6.25 = $5/M）。你在分发层加的倍率会被原样保留。
+              默认 <code>1.0</code> 表示不缩放。
+            </p>
+            <input type="text" name="cache_creation_token_scale" placeholder="1.0"/>
+          </div>
+          <div class="field">
+            <div class="field-head"><span class="field-title">cache_read token 缩放系数</span><span class="field-key">cache_read_token_scale</span></div>
+            <p class="field-desc">
+              同上。例：上游 cache_read 按 $0.5/M、分发层配 $0.625/M → 填 <code>0.8</code>。
+            </p>
+            <input type="text" name="cache_read_token_scale" placeholder="1.0"/>
+          </div>
+
           <div class="field" style="margin-top:14px">
             <div class="field-head"><span class="field-title">保留最近 N 轮完整</span><span class="field-key">tool_result_keep_recent_turns</span></div>
             <input name="tool_result_keep_recent_turns" type="number" placeholder="2"/>

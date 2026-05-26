@@ -119,6 +119,8 @@ def convert_usage_to_additive(
     usage: dict[str, Any],
     cache_write_multiplier: float = 1.25,
     mode: str = "native",
+    cache_creation_scale: float = 1.0,
+    cache_read_scale: float = 1.0,
 ) -> bool:
     """Normalize OpenRouter-style usage so the downstream billing layer computes correctly.
 
@@ -167,13 +169,16 @@ def convert_usage_to_additive(
         # bills them via cache_creation_input_tokens / cache_read_input_tokens.
         usage["prompt_tokens"] = fresh
         if cache_write:
-            usage["cache_creation_input_tokens"] = cache_write
+            scaled_cw = round(cache_write * cache_creation_scale)
+            usage["cache_creation_input_tokens"] = scaled_cw
+            # 保持 details 字段与输出一致，避免下游重复计费
+            if isinstance(usage.get("prompt_tokens_details"), dict):
+                usage["prompt_tokens_details"]["cache_write_tokens"] = scaled_cw
         if cached:
-            usage["cache_read_input_tokens"] = cached
-        # Keep prompt_tokens_details for downstream that reads it,
-        # but normalize cached_tokens so cached is not counted twice.
-        # OpenRouter's `cached_tokens` already represents cache reads,
-        # which we now expose explicitly via cache_read_input_tokens.
+            scaled_cr = round(cached * cache_read_scale)
+            usage["cache_read_input_tokens"] = scaled_cr
+            if isinstance(usage.get("prompt_tokens_details"), dict):
+                usage["prompt_tokens_details"]["cached_tokens"] = scaled_cr
         return True
 
     # legacy additive mode

@@ -572,6 +572,8 @@ async def chat_completions(
                 usage,
                 cache_write_multiplier=2.0 if settings.cache_ttl_1h else 1.25,
                 mode=settings.cache_billing_mode,
+                cache_creation_scale=settings.cache_creation_token_scale,
+                cache_read_scale=settings.cache_read_token_scale,
             )
         else:
             usage = None
@@ -1144,6 +1146,8 @@ async def _stream_chat(
                                 u,
                                 cache_write_multiplier=2.0 if settings.cache_ttl_1h else 1.25,
                                 mode=settings.cache_billing_mode,
+                                cache_creation_scale=settings.cache_creation_token_scale,
+                                cache_read_scale=settings.cache_read_token_scale,
                             ):
                                 line = "data: " + json.dumps(parsed, ensure_ascii=False)
                         yield line + "\n\n"
