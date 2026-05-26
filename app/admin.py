@@ -545,12 +545,12 @@ _ADMIN_HTML = """<!DOCTYPE html>
           </div>
           <div class="field">
             <div class="field-head"><span class="field-title">xhigh 预算 (tokens)</span><span class="field-key">reasoning_budget_xhigh</span></div>
-            <p class="field-desc">OpenRouter 上游采用 <code>{effort:"high", max_tokens:32768}</code>。</p>
+            <p class="field-desc">OpenRouter 上游采用 <code>{max_tokens:32768}</code>（与 effort 互斥，不同时传）。</p>
             <input type="number" name="reasoning_budget_xhigh" placeholder="32768"/>
           </div>
           <div class="field">
             <div class="field-head"><span class="field-title">max 预算 (tokens)</span><span class="field-key">reasoning_budget_max</span></div>
-            <p class="field-desc">OpenRouter 上游采用 <code>{effort:"high", max_tokens:65536}</code>。</p>
+            <p class="field-desc">OpenRouter 上游采用 <code>{max_tokens:65536}</code>（与 effort 互斥，不同时传）。</p>
             <input type="number" name="reasoning_budget_max" placeholder="65536"/>
           </div>
         </div>

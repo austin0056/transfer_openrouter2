@@ -69,25 +69,28 @@ def apply_reasoning_to_openrouter_body(
 ) -> None:
     """Inject OpenRouter ``reasoning`` field based on the parsed effort label.
 
+    OpenRouter spec: ``reasoning.effort`` and ``reasoning.max_tokens`` are
+    mutually exclusive — specifying both returns HTTP 400.
+
     Mapping:
       low/medium/high → ``{"effort": "low|medium|high"}``
-      xhigh           → ``{"effort": "high", "max_tokens": 32768}``
-      max             → ``{"effort": "high", "max_tokens": 65536}``
+      xhigh           → ``{"max_tokens": 32768}``
+      max             → ``{"max_tokens": 65536}``
 
-    A pre-existing ``reasoning_effort`` key on the request takes precedence
-    (the suffix is silently ignored in that case).
+    A pre-existing ``reasoning_effort`` or ``reasoning`` key on the request
+    takes precedence (the suffix is silently ignored in that case).
     """
     if not effort:
         return
-    # Honor explicit client-supplied reasoning_effort
+    # Honor explicit client-supplied reasoning_effort or reasoning
     if body.get("reasoning_effort") or body.get("reasoning"):
         return
     if effort in ("low", "medium", "high"):
         body["reasoning"] = {"effort": effort}
     elif effort == "xhigh":
-        body["reasoning"] = {"effort": "high", "max_tokens": 32768}
+        body["reasoning"] = {"max_tokens": 32768}
     elif effort == "max":
-        body["reasoning"] = {"effort": "high", "max_tokens": 65536}
+        body["reasoning"] = {"max_tokens": 65536}
 
 
 def _inject_identity_prompt(body: dict[str, Any], settings: Settings) -> None:
