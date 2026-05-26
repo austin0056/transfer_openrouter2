@@ -151,6 +151,20 @@ def convert_usage_to_additive(
 
     Returns True if the usage was modified.
     """
+    # 防御式 coerce：admin UI 上古老配置或外部传入可能走
+    # 字符串路径（如 "1.0"），避免 round(int * "1.0") TypeError。
+    try:
+        cache_write_multiplier = float(cache_write_multiplier)
+    except (TypeError, ValueError):
+        cache_write_multiplier = 1.25
+    try:
+        cache_creation_scale = float(cache_creation_scale)
+    except (TypeError, ValueError):
+        cache_creation_scale = 1.0
+    try:
+        cache_read_scale = float(cache_read_scale)
+    except (TypeError, ValueError):
+        cache_read_scale = 1.0
     details = usage.get("prompt_tokens_details")
     cached = 0
     cache_write = 0

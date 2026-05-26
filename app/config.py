@@ -227,7 +227,13 @@ def save_runtime_config(updates: dict[str, Any]) -> Settings:
     """Merge updates into current settings, write JSON file, reload cache."""
     base = get_settings()
     patch = {k: v for k, v in updates.items() if k in Settings.model_fields and k != "admin_key"}
-    new_settings = base.model_copy(update=patch)
+    # 关键：不能用 model_copy(update=...) — 它不走字段 validator，
+    # admin UI 提交的字符串会带到 float/int 字段上，运行时
+    # round(int * "1.0") 直接 TypeError。重新构造 Settings 实例才会
+    # 强迭验证 + coerce（str -> float / int / bool）。
+    merged_data = base.model_dump()
+    merged_data.update(patch)
+    new_settings = Settings.model_validate(merged_data)
     path = config_json_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     to_write = new_settings.model_dump()
